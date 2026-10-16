@@ -1,2 +1,2 @@
-"""统一图形入口：v1.3.0 四页玻璃工作台。"""
-from .玻璃界面 import 手势系统界面
+"""v1.4.0 兼容旧的 GUI 导入路径：新界面由 PySide6 实现。"""
+from .现代界面 import GestureWindow,run

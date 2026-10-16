@@ -1,5 +1,9 @@
-"""启动项目演示界面：允许未训练时以键盘预览，绝不模拟手势识别结果。"""
-from 手势系统.图形界面 import 手势系统界面
-
+"""v1.4.0: PySide6 桌面工作台入口（使用现有 CNN 模型）。"""
+try:
+    from 手势系统.现代界面 import run
+except ImportError as e:
+    if 'PySide6' in str(e):
+        raise SystemExit('当前虚拟环境缺少 PySide6。请执行：.\\.venv\\Scripts\\python.exe -m pip install "PySide6>=6.10,<6.13"') from e
+    raise
 if __name__ == '__main__':
-    手势系统界面().运行()
+    raise SystemExit(run())

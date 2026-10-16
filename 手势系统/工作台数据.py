@@ -1,0 +1,125 @@
+"""v1.4.0 数据工作台：安全导入、回收站、自动统计与训练数据索引。无 Qt 依赖。"""
+from __future__ import annotations
+import hashlib
+import json
+import os
+import re
+import shutil
+import time
+from pathlib import Path
+from PIL import Image
+from .配置 import 类别, 数据目录
+
+图片后缀={'.jpg','.jpeg','.png','.bmp','.webp'}
+轮次格式=re.compile(r'^[\w\u4e00-\u9fff\-]{1,36}$',re.UNICODE)
+
+
+def 验证轮次(name:str)->str:
+    if not 轮次格式.fullmatch(name or '') or name in {'.','..','公开训练','回收站'}:
+        raise ValueError('场景名只能包含中英文、数字、下划线或连字符，最多36字')
+    return name
+
+
+def 文件图片可读(path:Path)->bool:
+    if not path.is_file() or path.suffix.lower() not in 图片后缀:return False
+    try:
+        with Image.open(path) as im:
+            im.verify()
+        return True
+    except (OSError,ValueError,SyntaxError):return False
+
+
+def 样本汇总(root:Path=数据目录)->dict:
+    root=Path(root)
+    result={'公开':{},'本地':{},'场景':{},'错误文件':0}
+    for label in 类别:
+        pub=root/'公开训练'/label
+        result['公开'][label]=sum(1 for x in pub.iterdir() if x.is_file() and x.suffix.lower() in 图片后缀) if pub.is_dir() else 0
+        own=root/label
+        count=0
+        if own.is_dir():
+            for session in own.iterdir():
+                if not session.is_dir() or session.is_symlink():continue
+                n=sum(1 for x in session.iterdir() if x.is_file() and x.suffix.lower() in 图片后缀)
+                if n:
+                    result['场景'].setdefault(session.name,{})[label]=n
+                count+=n
+        result['本地'][label]=count
+    result['公开合计']=sum(result['公开'].values())
+    result['本地合计']=sum(result['本地'].values())
+    return result
+
+
+def _sha(path:Path)->str:
+    h=hashlib.sha256()
+    with path.open('rb') as f:
+        for block in iter(lambda:f.read(1024*1024),b''):h.update(block)
+    return h.hexdigest()
+
+
+def 导入图片(files:list[Path],category:str,session:str,root:Path=数据目录)->dict:
+    if category not in 类别:raise ValueError('未知手势类别，不能导入')
+    验证轮次(session)
+    target=Path(root)/category/session
+    if target.is_symlink() or (Path(root)/category).is_symlink():raise ValueError('禁止向符号链接目录导入图片')
+    target.mkdir(parents=True,exist_ok=True)
+    existing={_sha(p) for p in target.iterdir() if p.is_file() and p.suffix.lower() in 图片后缀}
+    added=duplicate=invalid=0
+    for source in files:
+        source=Path(source)
+        if not 文件图片可读(source):invalid+=1;continue
+        digest=_sha(source)
+        if digest in existing:duplicate+=1;continue
+        name=f'import_{time.time_ns()}_{digest[:14]}{source.suffix.lower()}'
+        dest=target/name
+        tmp=target/(name+'.part')
+        try:
+            shutil.copyfile(source,tmp)
+            if _sha(tmp)!=digest:raise OSError('复制过程中校验未通过')
+            os.replace(tmp,dest)
+        finally:
+            tmp.unlink(missing_ok=True)
+        existing.add(digest);added+=1
+    return {'新增':added,'重复':duplicate,'无效':invalid,'位置':str(target)}
+
+
+def 回收本地场景(category:str,session:str,root:Path=数据目录)->Path:
+    if category not in 类别:raise ValueError('只能回收私人手势类别')
+    验证轮次(session)
+    root=Path(root)
+    src=root/category/session
+    if not src.is_dir() or src.is_symlink():raise FileNotFoundError('所选场景不存在或不是正常目录')
+    trash=root/'回收站'/time.strftime('%Y%m%d-%H%M%S')/category
+    destination=trash/session
+    if destination.exists():raise FileExistsError('回收目录存在同名冲突，请稍后重试')
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    shutil.move(str(src),str(destination))
+    return destination
+
+
+def 训练样本索引(sessions:list[str],root:Path=数据目录,include_public:bool=True):
+    root=Path(root)
+    sessions=list(dict.fromkeys(验证轮次(x) for x in sessions))
+    if not sessions:raise ValueError('至少选择一个训练场景')
+    sample=[]
+    for i,label in enumerate(类别):
+        for scene in sessions:
+            folder=root/label/scene
+            if folder.is_dir() and not folder.is_symlink():
+                for p in sorted(folder.iterdir()):
+                    if 文件图片可读(p):sample.append((p.relative_to(root).as_posix(),i))
+        if include_public:
+            pub=root/'公开训练'/label
+            if pub.is_dir() and not pub.is_symlink():
+                for p in sorted(pub.iterdir()):
+                    if 文件图片可读(p):sample.append((p.relative_to(root).as_posix(),i))
+    missing=[c for i,c in enumerate(类别) if not any(y==i for _,y in sample)]
+    if missing:raise ValueError('这些类别没有任何训练图片：'+', '.join(missing))
+    return sample
+
+
+def 验证快捷键(start:str,stop:str):
+    valid=re.compile(r'^(?:[A-Z0-9]|F(?:[1-9]|1[0-2]))$')
+    if not valid.fullmatch(start.upper()) or not valid.fullmatch(stop.upper()) or start.upper()==stop.upper():
+        raise ValueError('快捷键须为不同的字母、数字或 F1~F12')
+    return start.upper(),stop.upper()
