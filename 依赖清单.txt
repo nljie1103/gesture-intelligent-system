@@ -1,0 +1,5 @@
+numpy>=2.0,<3.0
+Pillow>=11.0,<13.0
+opencv-python>=4.10,<5.0
+matplotlib>=3.9,<4.0
+torch>=2.8,<3.0

@@ -1,0 +1,19 @@
+# 本地环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/
+# 采集图像可能包含个人信息，不上传
+数据/
+# 本地训练输出、模型权重及图片内容
+模型/
+输出/
+素材/图片/
+# 打包产物
+.发布/
+*.zip
+*.log
+.DS_Store
+Thumbs.db
