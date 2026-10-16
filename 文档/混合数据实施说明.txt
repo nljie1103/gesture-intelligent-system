@@ -1,0 +1,58 @@
+基于手势识别的智能系统 · v1.1.0 混合数据实施说明
+======================================
+
+一、来源与类别
+推荐下载 HaGRIDv2 的精简子集，下载页：
+https://huggingface.co/datasets/GestureDetectionConnoisseurs/hagrid_subsets
+建议先下载 hagrid-export_100_images.zip，约 402 MB，包含多种类别及标注。
+
+我们的映射：palm->张开手掌、fist->握拳、like->点赞、peace->剪刀手、one->食指指向。
+HaGRID 的 no_gesture 不是没有手，不能导入为“无手”。
+HaGRID 的 one 按“单独竖起食指”的规则采集，方向需统一。
+其他未知姿态用来做现场拒识测试，不能假装 CNN 一定能拒识。
+
+注意许可与引用：HaGRID 官方描述采用 CC BY-SA 4.0 的变体，具体条款见官方单独许可文件：
+https://github.com/hukenovs/hagrid/tree/master/license
+精简来源标为 CC BY-SA 4.0：
+https://huggingface.co/datasets/GestureDetectionConnoisseurs/hagrid_subsets
+训练前请再次核对许可，特别是后续商业使用与模型分发用途。
+本次按用户要求，将 389 张经过裁剪的公开训练样本与来源清单提交到 Private 仓库，不提交 402 MB 原始 ZIP；使用和再分发受上游 HaGRID 特定许可约束。
+本项目暂时不创建自身 README.md 或 LICENSE 文件。
+
+二、安装后的操作
+本项目的工作目录固定：
+C:\Users\jack\Desktop\niit\计算机视觉\基于手势识别的智能系统
+
+1) 将下载好的公开 ZIP 留在 Downloads，不解压，避免多余占用空间。
+2) 关闭实时识别系统，执行（PowerShell）：
+cd "C:\Users\jack\Desktop\niit\计算机视觉\基于手势识别的智能系统"
+.\.venv\Scripts\python.exe 导入公开数据.py --zip "$env:USERPROFILE\Downloads\hagrid-export_100_images.zip" --limit 100
+3) 在三个不同的背景/时段采集本地照片（每类 40~50 张即可起步）：
+.\.venv\Scripts\python.exe 采集数据.py --all --session 场景01 --count 50
+.\.venv\Scripts\python.exe 采集数据.py --all --session 场景02 --count 50
+.\.venv\Scripts\python.exe 采集数据.py --all --session 场景03 --count 50
+每个采集轮次中，按 S 开始当前类别，100% 采满后下一类别再按 S。
+建议不要同一分钟原地连续录三轮，至少改变背景/光线/时段，提升独立性。
+
+4) 正式两阶段训练（CPU 版 PyTorch）：
+.\.venv\Scripts\python.exe 训练混合模型.py --adapt 场景01 --val 场景02 --test 场景03 --epochs-public 8 --epochs-adapt 6 --device cpu
+5) 启动已有的 Tkinter 实时界面：
+.\.venv\Scripts\python.exe 启动系统.py
+6) 独立重评：
+.\.venv\Scripts\python.exe 评估混合模型.py --model 正式
+
+三、训练与实验设计
+公开原始 ZIP -> 按标注筛选单手框（5 类） -> 公开基础训练。
+自采场景01：所有 6 类只参与微调；其中“无手”还用于公开基线的第六类。
+自采场景02：只用于选择模型、轮数和运行置信度阈值。
+自采场景03：不参与训练/选择/阈值，只用于冻结后的最终测试。
+微调阶段混入约20%公开样本防遗忘；数据增强为亮度、对比度、小角度旋转。
+基线与微调模型在同一批场景03上对照；输出混淆矩阵、F1和准确率。
+不可声称未测得的准确率，数据量、类别数和评估耗时均自动记录。
+
+四、局限与下一步
+HaGRID 是多人多场景全幅照片，而实际应用是镜头中心固定 ROI，这种域偏移可能降低准确率。
+现阶段 CNN 只能闭集六分类；低置信度拒识不是未知手势检测的充分保证。
+图像裁剪选了 2.6 倍手框，尽量接近带背景的真实 ROI，但并不能保证性能。
+最终报告需要独立记录无手误触率、未知姿态误触率、摄像头推理延迟、帧率和失败案例。
+如需重新导入/训练，先做独立备份，不要随意覆盖已经冻结的数据和模型。

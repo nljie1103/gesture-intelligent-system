@@ -1,0 +1,18 @@
+HaGRIDv2 衍生公开训练数据：来源与许可说明
+============================================
+本目录不涉及项目自有代码的许可证，也不替代上游数据集许可。
+数据来源：HaGRID / HaGRIDv2，原项目 https://github.com/hukenovs/hagrid
+精简包来源：GestureDetectionConnoisseurs/hagrid_subsets
+https://huggingface.co/datasets/GestureDetectionConnoisseurs/hagrid_subsets
+原始归档：hagrid-export_100_images.zip
+原始 ZIP SHA256：72ada2959c117d23e98c8c4da2c9009580554d12163a6db8f78de50312cbdc47
+上游 HaGRID 数据集采用其特定的 CC BY-SA 4.0 变体，实际权利和限制以其官方许可文件为准：
+https://github.com/hukenovs/hagrid/tree/master/license
+精简分发页面标注 CC BY-SA 4.0：https://creativecommons.org/licenses/by-sa/4.0/
+这里仅存储从公开照片按标注框裁剪、转换为 JPEG 的 389 张五类训练样本。
+变更说明：只保留单手标注框，并在裁剪周围保留部分上下文；按固定中文类别重命名。
+palm=张开手掌(73)，fist=握拳(80)，like=点赞(71)，peace=剪刀手(86)，one=食指指向(79)。
+没有把 no_gesture 等同于无手，亦未上传任何自采摄像头照片。
+样本路径和来源映射参见 数据/公开数据清单.json。
+本数据的许可不意味着原作者认可或参与此项目。后续共享、商业使用或转分发
+应遵循 HaGRID 原始许可、署名和相同方式共享等条款，并留意肖像与隐私权。
