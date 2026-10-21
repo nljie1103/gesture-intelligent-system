@@ -1,4 +1,4 @@
-"""v1.4.0: PySide6 桌面工作台入口（使用现有 CNN 模型）。"""
+"""PySide6 桌面工作台入口（使用现有 CNN 模型）。"""
 try:
     from 手势系统.现代界面 import run
 except ImportError as e:

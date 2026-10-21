@@ -1,4 +1,4 @@
-"""v2.0.0: camera read, inference and candidate search away from Qt GUI thread."""
+"""Camera read, inference and candidate search away from Qt GUI thread."""
 from __future__ import annotations
 import sys
 import time

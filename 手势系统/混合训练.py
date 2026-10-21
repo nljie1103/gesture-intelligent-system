@@ -1,5 +1,6 @@
 """公开数据基础训练 + 自采集场景微调：只允许独立轮次进入验证和测试。"""
 from __future__ import annotations
+from .版本 import VERSION
 import csv
 import json
 import math
@@ -124,7 +125,7 @@ def _单阶段(名称: str, 初始模型, 训练样本: list, 验证样本: list
             best = score
             torch.save({'权重':model.state_dict(),'类别':list(类别),'输入尺寸':图像尺寸,
                         '网络结构':'轻量卷积网络','训练策略':名称,'最佳轮次':epoch,
-                        '验证宏平均F1':score[0],'版本':'1.1.0'},文件)
+                        '验证宏平均F1':score[0],'版本':VERSION},文件)
         print(f'[{名称}] Epoch {epoch}/{轮数} | 训练acc={row["训练准确率"]:.3f} | 验证F1={metrics["宏平均F1"]:.3f}', flush=True)
     best_model, _, meta = 加载分类模型(文件, 设备)
     val_metric, _, val_y, val_prob = 批量评估(best_model, 验证集, 设备)
@@ -178,7 +179,7 @@ def 训练混合模型(适配: str, 验证: str, 测试: str,
                                           candidate[k]['validation']['准确率'],k=='公开基线'))
     # 测试集仅在确定正式模型后被读取；双方在相同的冻结测试集上做一次性对比。
     test_loader = _载入器(split['测试'],尺寸,批大小,False,False,种子,Path(数据根目录))
-    report={'版本':'1.1.0','实验日期':time.strftime('%Y-%m-%d %H:%M:%S'),
+    report={'版本':VERSION,'实验日期':time.strftime('%Y-%m-%d %H:%M:%S'),
             '训练方式':'公开基线 + 本地微调','训练设备':设备,'类别':list(类别),'随机种子':种子,
             '参数':{'公开轮数':公开轮数,'微调轮数':微调轮数,'批大小':批大小,
                   '公开学习率':公开学习率,'微调学习率':微调学习率,'重放比例':重放比例},

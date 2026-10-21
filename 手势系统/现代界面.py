@@ -1,4 +1,4 @@
-"""Gesture Studio 2.0.0: PySide6 macOS-inspired Windows workbench.
+"""Gesture Studio: PySide6 macOS-inspired Windows workbench.
 
 This imitates macOS traffic-light window controls and translucent panels; it is
 not Apple's system Liquid Glass compositor. No synthetic detection results.
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QApplication,QWidget,QVBoxLayout,QHBoxLayout,QFra
     QGraphicsDropShadowEffect,QSizePolicy,QGridLayout,QToolButton,QListView,QAbstractButton)
 
 from .配置 import 根目录,数据目录,模型目录,输出目录,配置文件,类别,读取配置,建立运行目录
+from .版本 import VERSION, DISPLAY_VERSION, APP_TITLE
 from .控制 import 手势控制器
 from .推理 import 手势推理器
 from .预处理 import 获取识别矩形,裁剪手势
@@ -239,7 +240,7 @@ class Titlebar(QFrame):
         l.addWidget(brand);l.addStretch()
         self.name=label('手势识别 · 本地工作台',dim=True);l.addWidget(self.name)
         l.addStretch()
-        l.addWidget(label('v1.7.0',dim=True))
+        l.addWidget(label(DISPLAY_VERSION,dim=True))
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:self._drag=e.globalPosition().toPoint()-self.host.pos()
     def mouseMoveEvent(self,e):
@@ -371,7 +372,7 @@ class GestureWindow(QWidget):
         super().__init__()
         建立运行目录()
         self.settings=读取配置()
-        self.setWindowTitle('Gesture Studio  ·  v2.0.0')
+        self.setWindowTitle(APP_TITLE)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground,True)
@@ -468,7 +469,7 @@ class GestureWindow(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _,i=idx:self.set_page(i))
             b.setToolTip(name);sidebar.addWidget(b);self.navbuttons.append((b,icon_name,name))
-        sidebar.addStretch();sidebar.addWidget(label('2.0',dim=True))
+        sidebar.addStretch();sidebar.addWidget(label(DISPLAY_VERSION,dim=True))
         self.nav_transition=QParallelAnimationGroup(self)
         self.nav_min=QPropertyAnimation(self.side,b'minimumWidth',self)
         self.nav_max=QPropertyAnimation(self.side,b'maximumWidth',self)
@@ -734,7 +735,7 @@ class GestureWindow(QWidget):
         data['显示候选手部框']=self.show_box.isChecked()
         try:clean=验证设置(data)
         except ValueError as e:QMessageBox.warning(self,'设置错误',str(e));return
-        old=dict(self.settings);new={**old,**clean,'版本':'2.0.0'}
+        old=dict(self.settings);new={**old,**clean,'版本':VERSION}
         try:安全保存设置(配置文件,new)
         except OSError as e:QMessageBox.critical(self,'写入失败',str(e));return
         self.settings=new;self.stop_recognition()

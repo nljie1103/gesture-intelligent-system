@@ -48,15 +48,14 @@ class 四页管理测试(unittest.TestCase):
             self.assertEqual(json.loads(p.read_text('utf-8'))['备注'],'中文')
             self.assertEqual(len(list(Path(d).glob('*.tmp'))),0)
 
-    def test_导航四页且主页没有独立图片浏览面板(self):
-        from 手势系统.玻璃界面 import 手势系统界面
-        self.assertEqual(手势系统界面.页面映射,
-                         {'首页':'home','数据':'data','模型':'model','设置':'settings'})
-        import inspect
-        src=inspect.getsource(手势系统界面.构建首页)
+    def test_当前五页工作台而非废弃四页界面(self):
+        import ast
+        src=(Path(__file__).resolve().parents[1]/'手势系统/现代界面.py').read_text(encoding='utf-8')
+        tree=ast.parse(src)
+        cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='GestureWindow')
+        self.assertEqual(ast.literal_eval(next(n.value for n in cls.body if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id=='tabs' for x in n.targets))),['首页','数据','训练','模型','设置'])
+        self.assertIn('self.make_train()',src)
         self.assertNotIn('图片浏览 · 动作演示',src)
-        self.assertNotIn('暂停按钮',src)
-        self.assertIn('self.主按钮',src)
 
     def test_原模型类别数量保持六个(self):
         self.assertEqual(len(类别),6)

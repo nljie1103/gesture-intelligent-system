@@ -1,2 +1,2 @@
 """Gesture Studio · 六类手势识别与桌面工作台。"""
-__version__ = "2.0.0"
+from .版本 import VERSION as __version__

@@ -1,5 +1,6 @@
-"""v1.4.0 数据工作台训练。演示训练：不把同一采集场景当独立测试集。"""
+"""数据工作台训练。演示训练：不把同一采集场景当独立测试集。"""
 from __future__ import annotations
+from .版本 import VERSION
 import argparse
 import json
 import os
@@ -80,7 +81,7 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
             print(f'[{epoch}/{epochs}] loss={entry["train_loss"]:.4f} 训练准确率={entry["train_acc_not_test"]:.1%}（非测试）',flush=True)
         checkpoint={'权重':network.state_dict(),'类别':list(类别),'输入尺寸':size,
                     '网络结构':'轻量卷积网络','训练策略':'工作台全部训练' if mode=='all' else f'工作台专项强化：{target}',
-                    '版本':'2.0.0','用途':'单场景或指定场景训练，无独立验证'}
+                    '版本':VERSION,'用途':'单场景或指定场景训练，无独立验证'}
         staged=staging/'正式模型.pt'
         torch.save(checkpoint,staged)
         verify,ms,meta=加载分类模型(staged,'cpu')

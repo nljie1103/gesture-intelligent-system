@@ -17,9 +17,9 @@ def extract(name):
 
 class 界面修复测试(unittest.TestCase):
     def test_版本与五页面保持(self):
-        self.assertIn('2.0.0',(BASE/'手势系统'/'__init__.py').read_text(encoding='utf-8'))
+        self.assertEqual(__import__('手势系统').__version__,__import__('手势系统.版本',fromlist=['VERSION']).VERSION)
         self.assertIn("tabs=['首页','数据','训练','模型','设置']",SOURCE)
-        self.assertIn('v2.0.0',SOURCE)
+        self.assertIn('self.setWindowTitle(APP_TITLE)',SOURCE)
 
     def test_真正透明窗口禁用矩形系统底色(self):
         s=extract('apply_backdrop')

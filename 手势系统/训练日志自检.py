@@ -1,4 +1,4 @@
-"""v1.7.1: 在 GUI 使用与真实训练一致的 QProcess 管道验证中文显示，无需训练。"""
+"""在 GUI 使用与真实训练一致的 QProcess 管道验证中文显示，无需训练。"""
 from __future__ import annotations
 import sys
 import time

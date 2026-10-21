@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
-Write-Host '=== 手势识别系统 v1.0.0：独立虚拟环境安装 ===' -ForegroundColor Cyan
+
 
 function Find-Python {
     $preferred = 'C:\Dev\python\python314\python.exe'
@@ -23,6 +23,9 @@ function Find-Python {
 }
 
 $python = Find-Python
+$appVersion = (& $python -c 'from 手势系统.版本 import DISPLAY_VERSION; print(DISPLAY_VERSION)' | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or -not $appVersion) { throw '读取软件版本失败' }
+Write-Host "=== 手势识别系统 $appVersion：独立虚拟环境安装 ===" -ForegroundColor Cyan
 Write-Host "已选择 Python: $python"
 & $python -c 'import sys; assert sys.version_info[:2] >= (3,10) and sys.version_info[:2] <= (3,14), "仅支持 Python 3.10~3.14"'
 if ($LASTEXITCODE -ne 0) { throw 'Python 版本不符合要求' }

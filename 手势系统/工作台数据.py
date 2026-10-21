@@ -1,4 +1,4 @@
-"""v1.4.0 数据工作台：安全导入、回收站、自动统计与训练数据索引。无 Qt 依赖。"""
+"""数据工作台：安全导入、回收站、自动统计与训练数据索引。无 Qt 依赖。"""
 from __future__ import annotations
 import hashlib
 import json

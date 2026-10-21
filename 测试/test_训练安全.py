@@ -157,8 +157,8 @@ class UI静态契约(unittest.TestCase):
             self.assertIn('self.training_active()',self.func(name))
 
     def test_版本正确(self):
-        self.assertIn('v2.0.0',self.source)
-        self.assertIn("'版本':'2.0.0'",self.func('save_settings'))
+        self.assertIn('self.setWindowTitle(APP_TITLE)',self.source)
+        self.assertIn("'版本':VERSION",self.func('save_settings'))
         self.assertNotIn("self.camera_timer",self.source)
 
 

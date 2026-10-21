@@ -1,4 +1,4 @@
-"""v1.2.0：动作素材与展示文案集中管理，预留类别不参与当前 CNN 推理。"""
+"""动作素材与展示文案集中管理，预留类别不参与当前 CNN 推理。"""
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path

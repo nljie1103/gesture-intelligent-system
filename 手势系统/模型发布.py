@@ -1,4 +1,4 @@
-"""v2.0.0: crash-recoverable model/metadata publication; no stale calibration."""
+"""Crash-recoverable model/metadata publication; no stale calibration."""
 from __future__ import annotations
 import json
 import os
