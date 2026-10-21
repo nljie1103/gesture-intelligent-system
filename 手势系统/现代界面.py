@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import Qt, QPoint, QTimer, QProcess, QFileSystemWatcher, QSize, QRectF, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation, QByteArray
+from PySide6.QtCore import Qt, QPoint, QTimer, QProcess, QProcessEnvironment, QFileSystemWatcher, QSize, QRectF, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation, QByteArray
 from PySide6.QtGui import (QColor,QFont,QIcon,QImage,QKeySequence,QLinearGradient,
                            QPainter,QPainterPath,QPixmap,QRadialGradient,QShortcut,QPen)
 from PySide6.QtSvg import QSvgRenderer
@@ -30,6 +30,7 @@ from .动作资源 import 素材路径,动作索引,动作列表
 from .界面数据 import 验证设置,安全保存设置
 from .工作台数据 import (样本汇总,场景明细,导入图片,回收本地场景,回收整个场景,验证轮次,验证快捷键,图片后缀)
 from .训练状态 import 训练记录状态
+from .训练日志编码 import 训练日志解码器, 配置训练子进程编码
 
 NAVY='#25334C'; MUTED='#63718B'; BLUE='#3978EF'; GREEN='#1DAA79'
 
@@ -236,7 +237,7 @@ class Titlebar(QFrame):
         l.addWidget(brand);l.addStretch()
         self.name=label('手势识别 · 本地工作台',dim=True);l.addWidget(self.name)
         l.addStretch()
-        l.addWidget(label('v1.6.0',dim=True))
+        l.addWidget(label('v1.7.0',dim=True))
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:self._drag=e.globalPosition().toPoint()-self.host.pos()
     def mouseMoveEvent(self,e):
@@ -364,7 +365,7 @@ class GestureWindow(QWidget):
         super().__init__()
         建立运行目录()
         self.settings=读取配置()
-        self.setWindowTitle('Gesture Studio  ·  v1.6.0')
+        self.setWindowTitle('Gesture Studio  ·  v1.7.0')
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground,True)
@@ -721,7 +722,7 @@ class GestureWindow(QWidget):
         data['显示候选手部框']=self.show_box.isChecked()
         try:clean=验证设置(data)
         except ValueError as e:QMessageBox.warning(self,'设置错误',str(e));return
-        old=dict(self.settings);new={**old,**clean,'版本':'1.6.0'}
+        old=dict(self.settings);new={**old,**clean,'版本':'1.7.0'}
         try:安全保存设置(配置文件,new)
         except OSError as e:QMessageBox.critical(self,'写入失败',str(e));return
         self.settings=new;self.stop_recognition()
@@ -927,6 +928,12 @@ class GestureWindow(QWidget):
         self.proc=QProcess(self)
         self.proc.setWorkingDirectory(str(根目录))
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        # Windows Python 管道可能默认采用 GBK/CP936；本进程不改全局环境，只统一训练子进程输出。
+        process_env=QProcessEnvironment.systemEnvironment()
+        配置训练子进程编码(process_env)
+        self.proc.setProcessEnvironment(process_env)
+        # 解码器每轮新建，缓存跨 readyRead 分块的不完整 UTF-8 字节。
+        self._train_log_decoder=训练日志解码器()
         args=['-u','-m','手势系统.工作台训练','--mode',mode,'--sessions',scene,'--epochs',str(self.train_epoch.value()),
               '--device','cuda' if self.train_device.currentIndex() else 'cpu']
         if mode=='focus':args+=['--target',target]
@@ -936,13 +943,17 @@ class GestureWindow(QWidget):
         self.train_status.setText('训练中，界面仍可操作…')
         self.train_all.setEnabled(False);self.train_one.setEnabled(False);self.train_cancel.setEnabled(True)
         self.proc.start(sys.executable,args)
-    def read_training(self):
-        text=bytes(self.proc.readAllStandardOutput()).decode('utf-8',errors='replace')
+    def read_training(self,final=False):
+        if self.proc is None:return
+        data=bytes(self.proc.readAllStandardOutput())
+        # 即便 Qt 恰好将一个汉字的三字节分在不同 readyRead 事件中，也必须正确复原。
+        text=self._train_log_decoder.输入(data,结束=final)
+        if not text:return
         self.train_log.moveCursor(__import__('PySide6.QtGui',fromlist=['QTextCursor']).QTextCursor.MoveOperation.End)
         self.train_log.insertPlainText(text)
         self.train_log.ensureCursorVisible()
     def training_done(self,code,status):
-        self.read_training()
+        self.read_training(final=True)
         self.train_all.setEnabled(True);self.train_one.setEnabled(True);self.train_cancel.setEnabled(False)
         self.train_status.setText('✓ 训练完成' if code==0 else f'训练结束，退出码 {code}（请查看日志）')
         if code==0:
