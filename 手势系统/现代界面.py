@@ -1,4 +1,4 @@
-"""Gesture Studio 1.6: PySide6 macOS-inspired Windows workbench.
+"""Gesture Studio 1.7.1: PySide6 macOS-inspired Windows workbench.
 
 This imitates macOS traffic-light window controls and translucent panels; it is
 not Apple's system Liquid Glass compositor. No synthetic detection results.
@@ -657,6 +657,8 @@ class GestureWindow(QWidget):
         line=QHBoxLayout();bottom.layout().addLayout(line)
         self.train_status=label('空闲',dim=True);line.addWidget(self.train_status);line.addStretch()
         self.train_cancel=btn('停止训练',self.stop_training,danger=True);self.train_cancel.setEnabled(False)
+        self.train_selftest=btn('测试中文日志',self.test_training_log)
+        line.addWidget(self.train_selftest)
         line.addWidget(self.train_cancel)
         self.proc=None
         v.addStretch()
@@ -925,36 +927,53 @@ class GestureWindow(QWidget):
         msg=(f'使用场景 {scene} + 公开数据训练六分类 CNN。' if mode=='all' else f'专项强化 {target}，同时重放其他五类数据。')
         msg+='\n旧模型会备份。没有独立验证集，本次结果只供演示。\n确认开始？'
         if QMessageBox.question(self,'启动训练',msg)!=QMessageBox.StandardButton.Yes:return
+        args=['-X','utf8','-u','-m','手势系统.工作台训练','--mode',mode,'--sessions',scene,'--epochs',str(self.train_epoch.value()),
+              '--device','cuda' if self.train_device.currentIndex() else 'cpu']
+        if mode=='focus':args+=['--target',target]
+        self._launch_training_process(args,testing=False)
+
+    def test_training_log(self):
+        """一键验证真实 Qt 子进程日志通道；不读取数据、不训练或覆盖权重。"""
+        if self.proc and self.proc.state()!=QProcess.ProcessState.NotRunning:return
+        self._launch_training_process(['-X','utf8','-u','-m','手势系统.训练日志自检'],testing=True)
+
+    def _launch_training_process(self,args,*,testing):
         self.proc=QProcess(self)
         self.proc.setWorkingDirectory(str(根目录))
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        # Windows Python 管道可能默认采用 GBK/CP936；本进程不改全局环境，只统一训练子进程输出。
         process_env=QProcessEnvironment.systemEnvironment()
         配置训练子进程编码(process_env)
         self.proc.setProcessEnvironment(process_env)
-        # 解码器每轮新建，缓存跨 readyRead 分块的不完整 UTF-8 字节。
         self._train_log_decoder=训练日志解码器()
-        args=['-u','-m','手势系统.工作台训练','--mode',mode,'--sessions',scene,'--epochs',str(self.train_epoch.value()),
-              '--device','cuda' if self.train_device.currentIndex() else 'cpu']
-        if mode=='focus':args+=['--target',target]
+        self._train_log_testing=testing
+        self._train_log_plain=''
         self.proc.readyReadStandardOutput.connect(self.read_training)
         self.proc.finished.connect(self.training_done)
-        self.train_log.clear();self.train_log.append('启动：'+sys.executable+' '+' '.join(args))
-        self.train_status.setText('训练中，界面仍可操作…')
-        self.train_all.setEnabled(False);self.train_one.setEnabled(False);self.train_cancel.setEnabled(True)
+        self.train_log.clear()
+        self.train_log.append('启动：'+sys.executable+' '+' '.join(args)+'\n')
+        self.train_status.setText('正在验证中文日志（不训练）…' if testing else '训练中，界面仍可操作…')
+        self.train_all.setEnabled(False);self.train_one.setEnabled(False)
+        self.train_selftest.setEnabled(False);self.train_cancel.setEnabled(True)
         self.proc.start(sys.executable,args)
     def read_training(self,final=False):
         if self.proc is None:return
         data=bytes(self.proc.readAllStandardOutput())
         # 即便 Qt 恰好将一个汉字的三字节分在不同 readyRead 事件中，也必须正确复原。
         text=self._train_log_decoder.输入(data,结束=final)
+        self._train_log_plain+=text
         if not text:return
         self.train_log.moveCursor(__import__('PySide6.QtGui',fromlist=['QTextCursor']).QTextCursor.MoveOperation.End)
         self.train_log.insertPlainText(text)
         self.train_log.ensureCursorVisible()
     def training_done(self,code,status):
         self.read_training(final=True)
-        self.train_all.setEnabled(True);self.train_one.setEnabled(True);self.train_cancel.setEnabled(False)
+        self.train_all.setEnabled(True);self.train_one.setEnabled(True)
+        self.train_selftest.setEnabled(True);self.train_cancel.setEnabled(False)
+        if self._train_log_testing:
+            passed=(code==0 and all(x in self._train_log_plain for x in ('读取有效样本', '剪刀手', '食指指向', '训练准确率', '中文目录'))
+                    and '\ufffd' not in self._train_log_plain)
+            self.train_status.setText('✓ 中文日志显示正常；没有训练模型' if passed else '× 日志自检未通过，请复制日志反馈')
+            return
         self.train_status.setText('✓ 训练完成' if code==0 else f'训练结束，退出码 {code}（请查看日志）')
         if code==0:
             self.reload_model();self.refresh_training_status()

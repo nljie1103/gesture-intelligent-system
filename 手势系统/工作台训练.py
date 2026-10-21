@@ -13,6 +13,7 @@ from pathlib import Path
 from .配置 import 类别, 数据目录, 模型目录, 输出目录, 读取配置
 from .工作台数据 import 训练样本索引
 from .训练状态 import 文件哈希
+from .训练日志编码 import 配置标准流UTF8
 
 
 def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cpu',data_root:Path=数据目录,model_root:Path=模型目录,output_root:Path=输出目录):
@@ -118,4 +119,6 @@ def main():
         print('训练失败：'+str(e),file=sys.stderr,flush=True)
         raise SystemExit(1)
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    配置标准流UTF8()
+    main()

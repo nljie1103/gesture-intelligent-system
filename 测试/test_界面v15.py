@@ -17,7 +17,7 @@ def extract(name):
 
 class 界面修复测试(unittest.TestCase):
     def test_版本与五页面保持(self):
-        self.assertIn('1.7.0',(BASE/'手势系统'/'__init__.py').read_text(encoding='utf-8'))
+        self.assertIn('1.7.1',(BASE/'手势系统'/'__init__.py').read_text(encoding='utf-8'))
         self.assertIn("tabs=['首页','数据','训练','模型','设置']",SOURCE)
         self.assertIn('v1.7.0',SOURCE)
 

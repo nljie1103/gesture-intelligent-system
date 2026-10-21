@@ -17,7 +17,7 @@ class 日志编码测试(unittest.TestCase):
     def test_训练环境明确指定UTF8(self):
         fake=FakeProcessEnvironment()
         self.assertIs(配置训练子进程编码(fake),fake)
-        self.assertEqual(fake.values['PYTHONIOENCODING'],'utf-8')
+        self.assertEqual(fake.values['PYTHONIOENCODING'],'utf-8:backslashreplace')
         self.assertEqual(fake.values['PYTHONUTF8'],'1')
 
     def test_每个字节独立到达仍无乱码(self):
@@ -56,7 +56,6 @@ class 日志编码测试(unittest.TestCase):
         env=os.environ.copy();env['PYTHONIOENCODING']='cp936';env.update(fake.values)
         result=subprocess.run([sys.executable,'-u','-c',"import sys;print('训练中：点赞 剪刀手 ✅');print('结束：无手',file=sys.stderr)"],
                               env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20,check=True)
-        # Windows 使用 CRLF，Unix 使用 LF；只校验 UTF-8 中文内容与两条日志均完整出现。
         self.assertCountEqual(result.stdout.decode('utf-8').splitlines(), ['训练中：点赞 剪刀手 ✅', '结束：无手'])
 
     def test_GUI真正接入编码和分块解码(self):
