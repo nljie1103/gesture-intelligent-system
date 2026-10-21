@@ -1,4 +1,4 @@
-"""Gesture Studio 1.4: PySide6 macOS-inspired Windows workbench.
+"""Gesture Studio 1.5: PySide6 macOS-inspired Windows workbench.
 
 This imitates macOS traffic-light window controls and translucent panels; it is
 not Apple's system Liquid Glass compositor. No synthetic detection results.
@@ -12,13 +12,14 @@ import time
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import Qt, QPoint, QTimer, QProcess, QFileSystemWatcher, QSize, QRectF
+from PySide6.QtCore import Qt, QPoint, QTimer, QProcess, QFileSystemWatcher, QSize, QRectF, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation, QByteArray
 from PySide6.QtGui import (QColor,QFont,QIcon,QImage,QKeySequence,QLinearGradient,
                            QPainter,QPainterPath,QPixmap,QRadialGradient,QShortcut,QPen)
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QApplication,QWidget,QVBoxLayout,QHBoxLayout,QFrame,QLabel,QPushButton,
     QStackedWidget,QScrollArea,QComboBox,QLineEdit,QSpinBox,QDoubleSpinBox,QCheckBox,QProgressBar,
     QTableWidget,QTableWidgetItem,QHeaderView,QFileDialog,QMessageBox,QDialog,QTextEdit,
-    QGraphicsDropShadowEffect,QSizePolicy,QGridLayout,QSizeGrip)
+    QGraphicsDropShadowEffect,QSizePolicy,QGridLayout,QSizeGrip,QToolButton,QListView)
 
 from .配置 import 根目录,数据目录,模型目录,输出目录,配置文件,类别,读取配置,建立运行目录
 from .控制 import 手势控制器
@@ -37,21 +38,28 @@ QWidget#windowShell {background:transparent;}
 QFrame#glass {background-color:rgba(255,255,255,194); border:1px solid rgba(255,255,255,232); border-radius:24px;}
 QFrame#inner {background-color:rgba(247,249,255,210); border:1px solid rgba(220,228,246,150); border-radius:17px;}
 QFrame#side {background-color:rgba(250,250,255,155); border:1px solid rgba(255,255,255,230); border-radius:22px;}
-QPushButton {background-color:rgba(255,255,255,180); border:1px solid rgba(212,225,244,205); border-radius:13px; padding:10px 14px; font-weight:600;}
-QPushButton:hover {background-color:rgba(255,255,255,245); border-color:#A4BFEF;}
-QPushButton:pressed {background-color:#DDE9FF;}
+QPushButton {background-color:rgba(255,255,255,205); border:1px solid rgba(204,216,232,220); border-radius:13px; padding:0px 16px; min-height:42px; font-weight:600;}
+QPushButton:hover {background-color:rgba(255,255,255,245); border-color:#B0C5E2;}
+QPushButton:pressed {background-color:#DBE9FC;}
 QPushButton:disabled {color:#9FAEC4; background-color:#E8EDF5;}
-QPushButton#primary {background:#3978EF; color:white; border:none; border-radius:15px; padding:14px 22px; font-size:14px;}
-QPushButton#primary:hover {background:#2568DF;}
-QPushButton#danger {color:#BB465B; border-color:#F0CBD2;}
-QPushButton#navButton {background:transparent; border:0px; border-radius:13px; text-align:left; padding:12px 12px;}
-QPushButton#navButton:checked {background-color:rgba(226,238,255,230); color:#1E65CE;}
+QPushButton#primary {background:#3978EF; color:white; border:none; border-radius:14px; padding:0px 20px; min-height:46px; font-size:14px;}
+QPushButton#primary:hover {background:#2869D5;}
+QPushButton#danger {color:#B34A59; border-color:#F0CBD2;}
+QToolButton#navButton {background:transparent; border:0px; border-radius:12px; padding:0px 12px; min-height:44px; font-weight:600; text-align:left;}
+QToolButton#navButton:hover {background:rgba(223,234,250,145);}
+QToolButton#navButton:checked {background:rgba(216,232,252,220); color:#1E65CE;}
 QLabel#title {font-size:25px; font-weight:700; color:#273752;}
 QLabel#h2 {font-size:17px; font-weight:700; color:#263750;}
 QLabel#meta {color:#708097; font-size:12px;}
 QLabel#hero {font-size:32px; font-weight:700; color:#24334D;}
-QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox {background:rgba(255,255,255,218); border:1px solid #D3E0F0; border-radius:12px; padding:8px; min-height:22px;}
-QLineEdit:focus,QComboBox:focus,QSpinBox:focus,QDoubleSpinBox:focus {border:1px solid #538BEF;}
+QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox {background:rgba(255,255,255,225); border:1px solid #D0DCEB; border-radius:12px; padding:7px 11px; min-height:27px; selection-background-color:#D8E8FF;}
+QLineEdit:focus,QComboBox:focus,QSpinBox:focus,QDoubleSpinBox:focus {border:1px solid #74A0ED;}
+QComboBox {padding-right:36px;}
+QComboBox::drop-down {subcontrol-origin:padding; subcontrol-position:top right; width:36px; border:0px; border-top-right-radius:12px; border-bottom-right-radius:12px;}
+QComboBox::down-arrow {image:none; width:0px; height:0px;}
+QComboBox:on {background:#FFFFFF; border-color:#74A0ED;}
+QSpinBox::up-button,QDoubleSpinBox::up-button {width:24px; background:#EEF3FB; border:0px; border-top-right-radius:10px;}
+QSpinBox::down-button,QDoubleSpinBox::down-button {width:24px; background:#EEF3FB; border:0px; border-bottom-right-radius:10px;}
 QTableWidget {background:rgba(255,255,255,160); border:0px; border-radius:12px; gridline-color:#E4ECF4; alternate-background-color:#F2F7FD;}
 QHeaderView::section {background:#EAF2FE; border:0; padding:9px; font-weight:700;}
 QProgressBar {border:0; background:#DEE8F7; border-radius:7px; height:11px; text-align:center;}
@@ -97,19 +105,81 @@ def qimage(frame):
 
 
 class Background(QWidget):
+    """真实透明圆角：先清空整个 RGBA 面，再仅向圆角路径内部绘制。"""
     def paintEvent(self,event):
-        p=QPainter(self);p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p=QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing,True)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(),QColor(0,0,0,0))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        radius=0 if self.window().isMaximized() else 25
         r=QRectF(self.rect().adjusted(1,1,-1,-1))
-        path=QPainterPath();path.addRoundedRect(r,25,25);p.setClipPath(path)
+        path=QPainterPath();path.addRoundedRect(r,radius,radius)
+        p.setClipPath(path)
         g=QLinearGradient(0,0,self.width(),self.height())
         g.setColorAt(0,QColor('#D6E8FF'));g.setColorAt(.45,QColor('#F6F6FC'));g.setColorAt(1,QColor('#EFE1F5'))
-        p.fillRect(self.rect(),g)
+        p.fillPath(path,g)
         for x,y,rad,c in [(.10,.12,.6,QColor(144,190,252,93)),(.84,.14,.6,QColor(238,181,224,85)),(.74,.86,.5,QColor(172,196,255,80))]:
-            radius=int(min(self.width(),self.height())*rad)
-            brush=QRadialGradient(self.width()*x,self.height()*y,radius)
+            area=int(min(self.width(),self.height())*rad)
+            brush=QRadialGradient(self.width()*x,self.height()*y,area)
             brush.setColorAt(0,c);brush.setColorAt(1,QColor(c.red(),c.green(),c.blue(),0))
-            p.fillRect(self.rect(),brush)
-        p.setClipping(False);p.setPen(QPen(QColor(255,255,255,245),1.6));p.drawRoundedRect(r,25,25)
+            p.fillPath(path,brush)
+        p.setClipping(False)
+        p.setPen(QPen(QColor(255,255,255,170),1.3));p.drawRoundedRect(r,radius,radius)
+
+
+# 同一组 24px 线性 SVG，避免混用字体符号、emoji 和不同来源图标。
+ICONS={
+ 'menu':'<path d="M4 7h16M4 12h16M4 17h16"/>',
+ 'home':'<path d="m3 10 9-7 9 7M5 9v12h14V9M9 21v-8h6v8"/>',
+ 'data':'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8.5" cy="9" r="1.4"/><path d="m4 17 5-5 4 4 3-3 4 4"/>',
+ 'train':'<rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/>',
+ 'model':'<path d="m12 3 9 5-9 5-9-5 9-5ZM3 12l9 5 9-5M3 16l9 5 9-5"/>',
+ 'settings':'<path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.7 5.7l1.4 1.4m9.8 9.8 1.4 1.4M18.3 5.7l-1.4 1.4m-9.8 9.8-1.4 1.4"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.7"/>',
+}
+
+
+def unified_icon(name,color='#53637D',size=22):
+    """矢量图标按屏幕比例渲染，折叠/展开都不替换字符。"""
+    if name not in ICONS:raise ValueError('未知导航图标：'+str(name))
+    svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">{ICONS[name]}</svg>'
+    renderer=QSvgRenderer(QByteArray(svg.encode('utf-8')))
+    pix=QPixmap(size*2,size*2);pix.fill(Qt.GlobalColor.transparent)
+    painter=QPainter(pix)
+    renderer.render(painter,QRectF(0,0,size*2,size*2))
+    painter.end();pix.setDevicePixelRatio(2)
+    return QIcon(pix)
+
+
+class GlassComboBox(QComboBox):
+    """统一编辑框、箭头、下拉列表；禁止回退到原生 Windows 下拉边框。"""
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(44)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+        self.setMaxVisibleItems(9)
+        view=QListView(self)
+        view.setObjectName('glassOptions')
+        view.setUniformItemSizes(True)
+        view.setSpacing(3)
+        view.setStyleSheet("""
+            QListView#glassOptions {background:#F7F9FE; border:1px solid #CDDBEC;
+                border-radius:12px; padding:7px; outline:none; font-size:13px;}
+            QListView#glassOptions::item {min-height:32px; padding-left:10px;
+                border:0px; border-radius:8px; color:#293854;}
+            QListView#glassOptions::item:hover {background:#EDF3FD;}
+            QListView#glassOptions::item:selected {background:#DCEBFE; color:#2066C5;}
+        """)
+        self.setView(view)
+    def paintEvent(self,event):
+        super().paintEvent(event)
+        p=QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor('#657993'),1.75))
+        x=self.width()-22;y=self.height()/2
+        path=QPainterPath();path.moveTo(x-4,y-2);path.lineTo(x,y+2);path.lineTo(x+4,y-2)
+        p.drawPath(path)
+        p.end()
 
 
 class Titlebar(QFrame):
@@ -125,7 +195,7 @@ class Titlebar(QFrame):
         l.addWidget(brand);l.addStretch()
         self.name=label('手势识别 · 本地工作台',dim=True);l.addWidget(self.name)
         l.addStretch()
-        l.addWidget(label('v1.4.0',dim=True))
+        l.addWidget(label('v1.5.0',dim=True))
     def mousePressEvent(self,e):
         if e.button()==Qt.MouseButton.LeftButton:self._drag=e.globalPosition().toPoint()-self.host.pos()
     def mouseMoveEvent(self,e):
@@ -146,7 +216,7 @@ class CaptureDialog(QDialog):
         layout=QVBoxLayout(self);layout.setContentsMargins(22,18,22,18);layout.setSpacing(12)
         layout.addWidget(label('摄像头采集',title=True))
         controls=QGridLayout();controls.setHorizontalSpacing(12)
-        self.pick=QComboBox();self.pick.addItems(['全部六类']+类别)
+        self.pick=GlassComboBox();self.pick.addItems(['全部六类']+类别)
         self.scene=QLineEdit('场景02');self.scene.setPlaceholderText('例如 场景02')
         self.scenes=QSpinBox();self.scenes.setRange(1,30);self.scenes.setValue(1)
         self.fps=QDoubleSpinBox();self.fps.setRange(.2,12);self.fps.setSingleStep(.5);self.fps.setValue(4);self.fps.setSuffix(' 张/秒')
@@ -253,9 +323,11 @@ class GestureWindow(QWidget):
         super().__init__()
         建立运行目录()
         self.settings=读取配置()
-        self.setWindowTitle('Gesture Studio  ·  v1.4.0')
+        self.setWindowTitle('Gesture Studio  ·  v1.5.0')
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground,True)
+        self.setAutoFillBackground(False)
         self.resize(1350,820);self.setMinimumSize(1080,680)
         self.running=False;self.cam=None;self.infer=None;self.lastcat=None;self.last_action='—'
         self.fps_count=0;self.fps_start=time.monotonic();self.last_fps=0
@@ -275,29 +347,55 @@ class GestureWindow(QWidget):
         self.refresh_data()
         self.apply_backdrop()
     def resizeEvent(self,e):
-        self.bg.setGeometry(self.rect());super().resizeEvent(e)
+        self.bg.setGeometry(self.rect());self.bg.update();super().resizeEvent(e)
     def apply_backdrop(self):
+        """Windows DWM 背景不能涂满无边框 HWND，否则四角会成为矩形白底。"""
         if sys.platform!='win32':return
         try:
-            # Windows 11 desktop acrylic is not Apple's refractive Liquid Glass.
-            hwnd=int(self.winId());value=ctypes.c_int(3)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd),38,ctypes.byref(value),4)
-        except (OSError,AttributeError):pass
-    def toggle_max(self):self.showNormal() if self.isMaximized() else self.showMaximized()
+            hwnd=ctypes.c_void_p(int(self.winId()))
+            # DWM_SYSTEMBACKDROP_TYPE: 1=NONE, 3=TRANSIENTWINDOW/Acrylic。
+            # 顶层 HWND 不添加整窗 Acrylic，透过 WA_TranslucentBackground 保留真透明角。
+            off=ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd,38,ctypes.byref(off),ctypes.sizeof(off))
+            # DWMWA_WINDOW_CORNER_PREFERENCE: 2=ROUND（系统支持时）。
+            corners=ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd,33,ctypes.byref(corners),ctypes.sizeof(corners))
+        except (OSError,AttributeError,ValueError):pass
+    def toggle_max(self):
+        self.showNormal() if self.isMaximized() else self.showMaximized()
+        self.bg.update()
     def build_ui(self):
         outer=QVBoxLayout(self.bg);outer.setContentsMargins(14,6,14,15);outer.setSpacing(4)
         self.titlebar=Titlebar(self);outer.addWidget(self.titlebar)
         row=QHBoxLayout();row.setSpacing(15);outer.addLayout(row,1)
-        self.side=QFrame();self.side.setObjectName('side');self.side.setFixedWidth(68)
+        self.side=QFrame();self.side.setObjectName('side')
+        self.side.setMinimumWidth(68);self.side.setMaximumWidth(68)
         sidebar=QVBoxLayout(self.side);sidebar.setContentsMargins(7,12,7,13);sidebar.setSpacing(8)
         self.collapsed=True
-        self.hamburger=btn('☰',self.toggle_nav);sidebar.addWidget(self.hamburger)
+        self.hamburger=QToolButton();self.hamburger.setObjectName('navButton')
+        self.hamburger.setIcon(unified_icon('menu'));self.hamburger.setIconSize(QSize(22,22))
+        self.hamburger.setToolTip('展开 / 收起导航栏')
+        self.hamburger.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.hamburger.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hamburger.clicked.connect(self.toggle_nav)
+        sidebar.addWidget(self.hamburger)
         self.navbuttons=[]
-        for idx,(ic,name) in enumerate(zip(['⌂','▦','◫','◉','⚙'],self.tabs)):
-            b=QPushButton(ic);b.setObjectName('navButton');b.setCheckable(True)
+        for idx,(name,icon_name) in enumerate(zip(self.tabs,['home','data','train','model','settings'])):
+            b=QToolButton();b.setObjectName('navButton');b.setCheckable(True)
+            b.setIcon(unified_icon(icon_name));b.setIconSize(QSize(22,22))
+            b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _,i=idx:self.set_page(i))
-            b.setToolTip(name);sidebar.addWidget(b);self.navbuttons.append((b,ic,name))
-        sidebar.addStretch();sidebar.addWidget(label('1.4',dim=True))
+            b.setToolTip(name);sidebar.addWidget(b);self.navbuttons.append((b,icon_name,name))
+        sidebar.addStretch();sidebar.addWidget(label('1.5',dim=True))
+        self.nav_transition=QParallelAnimationGroup(self)
+        self.nav_min=QPropertyAnimation(self.side,b'minimumWidth',self)
+        self.nav_max=QPropertyAnimation(self.side,b'maximumWidth',self)
+        for motion in (self.nav_min,self.nav_max):
+            motion.setDuration(185)
+            motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self.nav_transition.addAnimation(motion)
+        self.nav_transition.finished.connect(self._sync_navigation)
         row.addWidget(self.side)
         right=QVBoxLayout();right.setSpacing(10);row.addLayout(right,1)
         top=QHBoxLayout();self.heading=label('首页');self.heading.setObjectName('title')
@@ -309,15 +407,33 @@ class GestureWindow(QWidget):
         footer=QHBoxLayout();footer.addWidget(label('Gesture Studio · Private on-device workspace',dim=True));footer.addStretch()
         footer.addWidget(label('摄像头与私人图片不会自动上传',dim=True));footer.addWidget(QSizeGrip(self));right.addLayout(footer)
         self.set_page(0)
+    def _sync_navigation(self):
+        style=(Qt.ToolButtonStyle.ToolButtonIconOnly if self.collapsed
+               else Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        for b,_,name in self.navbuttons:
+            b.setText('' if self.collapsed else name)
+            b.setToolButtonStyle(style)
+        self.hamburger.setText('' if self.collapsed else '收起导航')
+        self.hamburger.setToolButtonStyle(style)
+
     def toggle_nav(self):
+        # 动画过程中不重新排版文本；完成后才切换图标旁的文字。
+        if self.nav_transition.state()==QAbstractAnimation.State.Running:
+            self.nav_transition.stop()
+        start=self.side.width()
         self.collapsed=not self.collapsed
-        self.side.setFixedWidth(68 if self.collapsed else 196)
-        for b,ic,name in self.navbuttons:b.setText(ic if self.collapsed else f'{ic}   {name}')
-        self.hamburger.setText('☰' if self.collapsed else '☰   收起')
+        if self.collapsed:
+            self._sync_navigation()
+        target=68 if self.collapsed else 196
+        for motion in (self.nav_min,self.nav_max):
+            motion.setStartValue(start);motion.setEndValue(target)
+        self.nav_transition.start()
     def set_page(self,index):
         if index!=0 and self.running:self.stop_recognition()
         self.stack.setCurrentIndex(index);self.heading.setText(self.tabs[index])
-        for i,(b,_,_) in enumerate(self.navbuttons):b.setChecked(i==index)
+        for i,(b,icon_name,_) in enumerate(self.navbuttons):
+            b.setChecked(i==index)
+            b.setIcon(unified_icon(icon_name,'#2E74DC' if i==index else '#53637D'))
         if index==1:self.refresh_data(force=True)
         if index==3:self.refresh_model()
     def page(self,subtitle):
@@ -369,8 +485,8 @@ class GestureWindow(QWidget):
         actions=panel();v.addWidget(actions)
         actions.layout().addWidget(label('图片导入与清理',title=True))
         line=QHBoxLayout();actions.layout().addLayout(line)
-        self.data_category=QComboBox();self.data_category.addItems(类别)
-        self.data_session=QComboBox();self.data_session.setEditable(True);self.data_session.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.data_category=GlassComboBox();self.data_category.addItems(类别)
+        self.data_session=GlassComboBox();self.data_session.setEditable(True);self.data_session.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.data_session.setEditText('场景02')
         line.addWidget(label('类别'));line.addWidget(self.data_category,1)
         line.addWidget(label('场景'));line.addWidget(self.data_session,1)
@@ -393,20 +509,23 @@ class GestureWindow(QWidget):
         train.layout().addWidget(label('模型训练',title=True))
         train.layout().addWidget(label('全部训练 / 单类专项强化（保留六分类并重放其他类别）',dim=True))
         row=QHBoxLayout();train.layout().addLayout(row)
-        self.train_scene=QComboBox();self.train_scene.setEditable(True);self.train_scene.setEditText('场景01')
+        self.train_scene=GlassComboBox();self.train_scene.setEditable(True);self.train_scene.setEditText('场景01')
         row.addWidget(label('训练场景'));row.addWidget(self.train_scene,1)
         row=QHBoxLayout();train.layout().addLayout(row)
         self.train_epoch=QSpinBox();self.train_epoch.setRange(1,200);self.train_epoch.setValue(8)
-        self.train_device=QComboBox();self.train_device.addItems(['CPU','CUDA（可用时）'])
+        self.train_device=GlassComboBox();self.train_device.addItems(['CPU','CUDA（可用时）'])
         row.addWidget(label('Epoch'));row.addWidget(self.train_epoch)
         row.addWidget(label('设备'));row.addWidget(self.train_device)
         row=QHBoxLayout();train.layout().addLayout(row)
-        self.focus_cat=QComboBox();self.focus_cat.addItems(类别)
+        self.focus_cat=GlassComboBox();self.focus_cat.addItems(类别)
         row.addWidget(label('专项类别'));row.addWidget(self.focus_cat,1)
         row=QHBoxLayout();train.layout().addLayout(row)
-        self.train_all=btn('▶ 一键训练全部',lambda:self.start_training('all'),primary=True)
+        self.train_all=btn('一键训练全部',lambda:self.start_training('all'),primary=True)
         self.train_one=btn('专项强化所选手势',lambda:self.start_training('focus'))
-        row.addWidget(self.train_all);row.addWidget(self.train_one)
+        # 显式文字宽度 + 高 DPI 留量，Qt 布局不允许收缩导致中文省略。
+        self.train_all.setMinimumWidth(max(176,self.train_all.fontMetrics().horizontalAdvance(self.train_all.text())+54))
+        self.train_one.setMinimumWidth(max(194,self.train_one.fontMetrics().horizontalAdvance(self.train_one.text())+54))
+        row.addWidget(self.train_all,1);row.addWidget(self.train_one,1)
         bottom=panel();v.addWidget(bottom,1)
         bottom.layout().addWidget(label('任务日志',title=True))
         self.train_log=QTextEdit();self.train_log.setReadOnly(True)
@@ -463,7 +582,7 @@ class GestureWindow(QWidget):
         data['显示候选手部框']=self.show_box.isChecked()
         try:clean=验证设置(data)
         except ValueError as e:QMessageBox.warning(self,'设置错误',str(e));return
-        old=dict(self.settings);new={**old,**clean,'版本':'1.4.0'}
+        old=dict(self.settings);new={**old,**clean,'版本':'1.5.0'}
         try:安全保存设置(配置文件,new)
         except OSError as e:QMessageBox.critical(self,'写入失败',str(e));return
         self.settings=new;self.stop_recognition()
@@ -518,6 +637,8 @@ class GestureWindow(QWidget):
         if self.cam:self.cam.set(cv2.CAP_PROP_FRAME_WIDTH,640);self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT,480)
         self.status.setText(('● 摄像头正常' if self.cam else '○ 摄像头未连接')+'     ·     '+('● 模型就绪' if self.infer else '○ 无模型'))
     def on_frame(self):
+        # 侧栏切换期间跳过少量同步 CPU 推理帧，保证 Qt 动画不被摄像头/模型阻塞。
+        if self.nav_transition.state()==QAbstractAnimation.State.Running:return
         if not self.cam:return
         ok,frame=self.cam.read()
         if not ok:
