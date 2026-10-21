@@ -21,12 +21,14 @@ def 验证轮次(name:str)->str:
 
 
 def 文件图片可读(path:Path)->bool:
-    if not path.is_file() or path.suffix.lower() not in 图片后缀:return False
     try:
+        if path.is_symlink() or not path.is_file() or path.suffix.lower() not in 图片后缀:return False
+        if path.stat().st_size > 24*1024*1024:return False
         with Image.open(path) as im:
+            if im.width*im.height>24_000_000 or min(im.size)<16:return False
             im.verify()
         return True
-    except (OSError,ValueError,SyntaxError):return False
+    except (OSError,ValueError,SyntaxError,Image.DecompressionBombError,MemoryError):return False
 
 
 def 样本汇总(root:Path=数据目录)->dict:
@@ -61,6 +63,7 @@ def 导入图片(files:list[Path],category:str,session:str,root:Path=数据目�
     if category not in 类别:raise ValueError('未知手势类别，不能导入')
     验证轮次(session)
     target=Path(root)/category/session
+    if Path(root).is_symlink():raise ValueError('禁止在符号链接数据根目录下导入图片')
     if target.is_symlink() or (Path(root)/category).is_symlink():raise ValueError('禁止向符号链接目录导入图片')
     target.mkdir(parents=True,exist_ok=True)
     existing={_sha(p) for p in target.iterdir() if p.is_file() and p.suffix.lower() in 图片后缀}
@@ -166,3 +169,21 @@ def 回收整个场景(session:str,root:Path=数据目录)->dict:
                 shutil.move(destination,original)
         raise
     return {'场景':session,'各类回收位置':moved,'回收类别数':len(moved),'回收目录':str(base)}
+
+
+def 创建训练快照(sample:list[tuple[str,int]], data_root:Path, snapshot_root:Path)->list[tuple[str,int]]:
+    """Copy input images into a stable private staging directory before DataLoader opens them."""
+    data_root=Path(data_root).resolve();snapshot_root=Path(snapshot_root)
+    output=[]
+    for relative,label in sample:
+        source=data_root/relative
+        resolved=source.resolve()
+        if not resolved.is_relative_to(data_root) or source.is_symlink() or not 文件图片可读(source):
+            raise ValueError('训练图片已移动或不可读：'+str(relative))
+        destination=snapshot_root/relative
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        before=_sha(source)
+        shutil.copyfile(source,destination)
+        if _sha(destination)!=before:raise OSError('采样时图片被外部程序修改：'+str(relative))
+        output.append((relative,label))
+    return output

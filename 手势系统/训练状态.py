@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from .配置 import 类别,模型目录
+from .模型发布 import TXN_NAME
 
 
 def 文件哈希(path:Path)->str:
@@ -15,6 +16,8 @@ def 文件哈希(path:Path)->str:
 
 def 训练记录状态(model_path:Path=None,record_path:Path=None)->dict:
     model_path=Path(model_path or (模型目录/'正式模型.pt'))
+    if (model_path.parent/TXN_NAME).exists():
+        return {'状态':'模型发布中，请稍候','类别':{k:'更新中' for k in 类别},'场景':[]}
     record_path=Path(record_path or (模型目录/'训练来源.json'))
     unknown={k:'来源未记录' for k in 类别}
     if not model_path.is_file():return {'状态':'未训练','类别':{k:'未训练' for k in 类别},'场景':[]}

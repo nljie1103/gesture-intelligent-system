@@ -1,4 +1,4 @@
-"""Gesture Studio 1.7.1: PySide6 macOS-inspired Windows workbench.
+"""Gesture Studio 2.0.0: PySide6 macOS-inspired Windows workbench.
 
 This imitates macOS traffic-light window controls and translucent panels; it is
 not Apple's system Liquid Glass compositor. No synthetic detection results.
@@ -31,6 +31,8 @@ from .界面数据 import 验证设置,安全保存设置
 from .工作台数据 import (样本汇总,场景明细,导入图片,回收本地场景,回收整个场景,验证轮次,验证快捷键,图片后缀)
 from .训练状态 import 训练记录状态
 from .训练日志编码 import 训练日志解码器, 配置训练子进程编码
+from .相机线程 import CameraWorker
+from .图片交互 import ImageControlDialog
 
 NAVY='#25334C'; MUTED='#63718B'; BLUE='#3978EF'; GREEN='#1DAA79'
 
@@ -254,7 +256,8 @@ class CaptureDialog(QDialog):
         self.host=host;self.setWindowTitle('采集新图片 · 手势工作台')
         self.resize(960,730);self.setMinimumSize(760,600)
         self.setStyleSheet(STYLES+'QDialog {background:#EEF4FD;}')
-        self.cam=None;self.active=False;self.seq=[];self.index=0;self.saved=0;self.last_saved=0
+        self.cam=None;self.capture_worker=None;self.camera_ready=False
+        self.active=False;self.seq=[];self.index=0;self.saved=0;self.last_saved=0
         layout=QVBoxLayout(self);layout.setContentsMargins(22,18,22,18);layout.setSpacing(12)
         layout.addWidget(label('摄像头采集',title=True))
         controls=QGridLayout();controls.setHorizontalSpacing(12)
@@ -281,17 +284,17 @@ class CaptureDialog(QDialog):
         buttons.addWidget(self.go);buttons.addWidget(self.stop);buttons.addStretch()
         buttons.addWidget(btn('完成并返回',self.accept))
         layout.addLayout(buttons)
-        self.timer=QTimer(self);self.timer.timeout.connect(self.tick)
         self.shortcuts=[];self.hot_start.setText('S');self.hot_stop.setText('E')
         self.open_camera()
-        self.timer.start(32)
     def open_camera(self):
-        device=int(self.host.settings.get('摄像头编号',0))
-        for backend in ([cv2.CAP_DSHOW,cv2.CAP_MSMF,cv2.CAP_ANY] if sys.platform=='win32' else [cv2.CAP_ANY]):
-            cam=cv2.VideoCapture(device,backend)
-            if cam.isOpened() and cam.read()[0]:self.cam=cam;break
-            cam.release()
-        if self.cam is None:self.info.setText('摄像头打不开；检查 VMware USB 设备与占用情况。')
+        self.capture_worker=CameraWorker(int(self.host.settings.get('摄像头编号',0)),
+            33,float(self.host.settings.get('识别区域占画面短边比例',.78)),capture_mode=True,parent=self)
+        self.capture_worker.camera_state.connect(self._camera_state)
+        self.capture_worker.frame_ready.connect(self.tick)
+        self.capture_worker.start()
+    def _camera_state(self,ready,message):
+        self.camera_ready=ready
+        if not ready:self.active=False;self.info.setText(message)
     def bind_shortcuts(self):
         for item in self.shortcuts:item.setEnabled(False);item.deleteLater()
         self.shortcuts=[]
@@ -301,7 +304,7 @@ class CaptureDialog(QDialog):
             sc.activated.connect(fn);self.shortcuts.append(sc)
         return start,stop
     def start(self):
-        if self.cam is None:QMessageBox.warning(self,'摄像头','没有可用的摄像头');return
+        if not self.camera_ready:QMessageBox.warning(self,'摄像头','没有可用的摄像头');return
         if self.active:return
         if not self.seq:
             try:
@@ -325,37 +328,40 @@ class CaptureDialog(QDialog):
     def pause(self):
         self.active=False;self.go.setText('▶ 继续采集')
         self.info.setText(f'已停止。保留已拍照片。进度：{self.index+1}/{len(self.seq)}，当前 {self.saved}/{self.count.value()} 张。' if self.seq else '未启动采集')
-    def tick(self):
-        if not self.cam:return
-        ok,frame=self.cam.read()
-        if not ok:self.pause();self.info.setText('摄像头读取失败，采集已停止');return
-        frame=cv2.flip(frame,1)
-        x1,y1,x2,y2=获取识别矩形(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
-        if self.active and self.index<len(self.seq):
-            now=time.monotonic()
-            if now-self.last_saved>=1./self.fps.value():
-                gesture,session=self.seq[self.index]
-                image=裁剪手势(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
-                folder=数据目录/gesture/session;folder.mkdir(parents=True,exist_ok=True)
-                name=folder/f'cap_{time.time_ns()}_{self.saved+1:05d}.jpg'
-                image.save(name,quality=92)
-                self.saved+=1;self.last_saved=now
-                self.info.setText(f'正在拍摄 {gesture} / {session}  ·  {self.saved}/{self.count.value()} 张  ·  任务 {self.index+1}/{len(self.seq)}')
-                if self.saved>=self.count.value():
-                    self.saved=0;self.index+=1;self.active=False
-                    if self.index==len(self.seq):
-                        self.info.setText('✓ 全部采集结束，图片已保存。关闭窗口即可在数据页自动看到变化。')
-                        self.go.setEnabled(False)
-                    else:
-                        c,s=self.seq[self.index]
-                        self.info.setText(f'下一组：{c}/{s}。调整手势或环境后按开始键，再采集。')
-                        self.go.setText('▶ 开始下一组')
-        cv2.rectangle(frame,(x1,y1),(x2,y2),(50,210,95) if self.active else (235,179,54),2)
-        q=QPixmap.fromImage(qimage(frame))
-        self.preview.setPixmap(q.scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
+    def tick(self,image,payload):
+        try:
+            frame=payload.get('raw_frame')
+            if frame is None:return
+            x1,y1,x2,y2=获取识别矩形(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
+            if self.active and self.index<len(self.seq):
+                now=time.monotonic()
+                if now-self.last_saved>=1./self.fps.value():
+                    gesture,session=self.seq[self.index]
+                    cropped=裁剪手势(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
+                    folder=数据目录/gesture/session;folder.mkdir(parents=True,exist_ok=True)
+                    name=folder/f'cap_{time.time_ns()}_{self.saved+1:05d}.jpg'
+                    cropped.save(name,quality=92)
+                    self.saved+=1;self.last_saved=now
+                    self.info.setText(f'正在拍摄 {gesture} / {session}  ·  {self.saved}/{self.count.value()} 张  ·  任务 {self.index+1}/{len(self.seq)}')
+                    if self.saved>=self.count.value():
+                        self.saved=0;self.index+=1;self.active=False
+                        if self.index==len(self.seq):
+                            self.info.setText('✓ 全部采集结束，图片已保存。关闭窗口即可在数据页自动看到变化。')
+                            self.go.setEnabled(False)
+                        else:
+                            c,s=self.seq[self.index]
+                            self.info.setText(f'下一组：{c}/{s}。调整手势或环境后按开始键，再采集。')
+                            self.go.setText('▶ 开始下一组')
+            q=QPixmap.fromImage(image)
+            self.preview.setPixmap(q.scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
+        finally:
+            if self.capture_worker:self.capture_worker.acknowledge()
     def done(self,result):
-        self.timer.stop()
-        if self.cam:self.cam.release();self.cam=None
+        if self.capture_worker and self.capture_worker.isRunning():
+            self.capture_worker.requestInterruption()
+            if not self.capture_worker.wait(2500):
+                QMessageBox.warning(self,'摄像头忙','摄像头仍在关闭，请稍后再试。')
+                return
         super().done(result)
 
 
@@ -365,13 +371,15 @@ class GestureWindow(QWidget):
         super().__init__()
         建立运行目录()
         self.settings=读取配置()
-        self.setWindowTitle('Gesture Studio  ·  v1.7.0')
+        self.setWindowTitle('Gesture Studio  ·  v2.0.0')
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground,True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground,True)
         self.setAutoFillBackground(False)
         self.resize(1350,820);self.setMinimumSize(1080,680)
-        self.running=False;self.cam=None;self.infer=None;self.lastcat=None;self.last_action='—'
+        self.running=False;self.camera_worker=None;self.camera_online=False;self.infer=None
+        self.lastcat=None;self.last_action='—';self._pending_capture=False;self._reopen_camera=False
+        self.image_dialog=None
         self.fps_count=0;self.fps_start=time.monotonic();self.last_fps=0
         self.ctrl=手势控制器(int(self.settings['稳定帧数']),int(self.settings['解除锁定帧数']),float(self.settings['触发冷却秒数']))
         self.smoother=候选框平滑器()
@@ -380,8 +388,6 @@ class GestureWindow(QWidget):
         self.bg.setStyleSheet(STYLES)
         self.bg.setGeometry(self.rect())
         self.build_ui();self.load_model();self.open_camera()
-        self.camera_timer=QTimer(self);self.camera_timer.timeout.connect(self.on_frame)
-        self.camera_timer.start(max(35,int(self.settings.get('视频刷新毫秒',30))))
         self.data_timer=QTimer(self);self.data_timer.timeout.connect(self.refresh_data)
         self.data_timer.start(1800)
         self.fs_watcher=QFileSystemWatcher(self);self.fs_watcher.directoryChanged.connect(self.refresh_data)
@@ -462,7 +468,7 @@ class GestureWindow(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _,i=idx:self.set_page(i))
             b.setToolTip(name);sidebar.addWidget(b);self.navbuttons.append((b,icon_name,name))
-        sidebar.addStretch();sidebar.addWidget(label('1.6',dim=True))
+        sidebar.addStretch();sidebar.addWidget(label('2.0',dim=True))
         self.nav_transition=QParallelAnimationGroup(self)
         self.nav_min=QPropertyAnimation(self.side,b'minimumWidth',self)
         self.nav_max=QPropertyAnimation(self.side,b'maximumWidth',self)
@@ -479,7 +485,7 @@ class GestureWindow(QWidget):
         right.addLayout(top)
         self.stack=QStackedWidget();right.addWidget(self.stack,1)
         self.make_home();self.make_data();self.make_train();self.make_model();self.make_settings()
-        footer=QHBoxLayout();footer.addWidget(label('Gesture Studio · Private on-device workspace',dim=True));footer.addStretch()
+        footer=QHBoxLayout();footer.addWidget(label('Gesture Studio · 本地运行工作台',dim=True));footer.addStretch()
         footer.addWidget(label('摄像头与私人图片不会自动上传',dim=True));footer.addWidget(CornerResizeHandle(self));right.addLayout(footer)
         self.set_page(0)
     def _sync_navigation(self):
@@ -505,6 +511,7 @@ class GestureWindow(QWidget):
         self.nav_transition.start()
     def set_page(self,index):
         if index!=0 and self.running:self.stop_recognition()
+        if self.camera_worker:self.camera_worker.preview_enabled=(index==0)
         self.stack.setCurrentIndex(index);self.heading.setText(self.tabs[index])
         for i,(b,icon_name,_) in enumerate(self.navbuttons):
             b.setChecked(i==index)
@@ -520,6 +527,7 @@ class GestureWindow(QWidget):
     def make_home(self):
         v=self.page('用摄像头完成手势交互 · 当前识别结果优先展示')
         controls=QHBoxLayout();controls.addStretch()
+        controls.addWidget(btn('打开图片交互窗口',self.open_image_dialog))
         controls.addWidget(btn('↻ 重置状态',self.reset))
         self.run_btn=btn('▶ 开始识别',self.toggle_run,primary=True)
         controls.addWidget(self.run_btn);v.addLayout(controls)
@@ -720,17 +728,19 @@ class GestureWindow(QWidget):
         for k,w in self.inputs.items():w.setText('' if self.settings.get(k) is None else str(self.settings[k]))
         self.show_box.setChecked(bool(self.settings.get('显示候选手部框',True)))
     def save_settings(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间不能修改设置。');return
         data={k:w.text().strip() for k,w in self.inputs.items()}
         data['显示候选手部框']=self.show_box.isChecked()
         try:clean=验证设置(data)
         except ValueError as e:QMessageBox.warning(self,'设置错误',str(e));return
-        old=dict(self.settings);new={**old,**clean,'版本':'1.7.0'}
+        old=dict(self.settings);new={**old,**clean,'版本':'2.0.0'}
         try:安全保存设置(配置文件,new)
         except OSError as e:QMessageBox.critical(self,'写入失败',str(e));return
         self.settings=new;self.stop_recognition()
         self.ctrl=手势控制器(int(new['稳定帧数']),int(new['解除锁定帧数']),float(new['触发冷却秒数']))
-        if int(old['摄像头编号'])!=int(new['摄像头编号']):self.open_camera()
         self.reload_model()
+        # Reopening in reload_model applies changed camera ID / interval in worker thread.
         QMessageBox.information(self,'设置','已经保存并应用；识别处于暂停状态。')
     def update_gesture(self,category,conf=None):
         category=category if category in 动作索引 else '无手'
@@ -742,80 +752,126 @@ class GestureWindow(QWidget):
             self.lastcat=category
         self.conf.setValue(round(conf*100) if conf is not None else 0)
         self.conf.setFormat(f'{conf:.1%}' if conf is not None else '—')
+    def open_image_dialog(self):
+        if self.image_dialog is None:
+            self.image_dialog=ImageControlDialog(self)
+        self.image_dialog.show();self.image_dialog.raise_();self.image_dialog.activateWindow()
+
     def toggle_run(self):
         if self.running:self.stop_recognition();return
         if not self.infer:
-            QMessageBox.warning(self,'模型不可用','先到“训练”执行训练，或到“模型”重新加载已有权重。');return
-        if not self.cam:
-            QMessageBox.warning(self,'摄像头不可用','请检查 VMware 摄像头连接和设置编号。');return
+            QMessageBox.warning(self,'模型不可用','请先在训练页训练模型，或在模型页重新加载。');return
+        if not self.camera_online or not self.camera_worker:
+            QMessageBox.warning(self,'摄像头不可用','请检查 VMware 摄像头连接或编号。');return
         self.running=True;self.ctrl.已暂停=False;self.ctrl.处理(None,time.monotonic())
-        self.run_btn.setText('Ⅱ 暂停识别')
+        self.camera_worker.recognizing=True
+        self.run_btn.setText('■ 停止识别')
+
     def stop_recognition(self):
-        self.running=False;self.ctrl.处理(None,time.monotonic())
+        self.running=False;self.ctrl.已暂停=False;self.ctrl.处理(None,time.monotonic())
+        if self.camera_worker:self.camera_worker.recognizing=False
         if hasattr(self,'run_btn'):self.run_btn.setText('▶ 开始识别')
+
     def reset(self):
-        self.stop_recognition();self.ctrl=手势控制器(int(self.settings['稳定帧数']),int(self.settings['解除锁定帧数']),float(self.settings['触发冷却秒数']))
+        self.stop_recognition()
+        self.ctrl=手势控制器(int(self.settings['稳定帧数']),int(self.settings['解除锁定帧数']),float(self.settings['触发冷却秒数']))
         self.last_event.setText('已重置，等待识别');self.update_gesture('无手')
+
     def load_model(self):
-        self.infer=None
+        self.infer=None;self.model_error=''
         try:
             if (模型目录/'正式模型.pt').exists():self.infer=手势推理器()
         except (OSError,ValueError,RuntimeError) as e:self.model_error=str(e)
         if hasattr(self,'model_state'):self.refresh_model()
-        self.status.setText(('● 摄像头正常' if self.cam else '○ 摄像头未连接')+'     ·     '+('● 模型就绪' if self.infer else '○ 无模型'))
+        self.update_status()
+
+    def update_status(self):
+        self.status.setText(('● 摄像头正常' if self.camera_online else '○ 摄像头未连接')+
+            '     ·     '+('● 模型就绪' if self.infer else '○ 无模型'))
+
     def reload_model(self):
-        self.stop_recognition();self.load_model()
+        self.stop_recognition()
+        # A CameraWorker holds the inference object only while started; restart before reloading.
+        if self.camera_worker and self.camera_worker.isRunning():
+            self._reopen_camera=True
+            self.camera_worker.requestInterruption()
+        else:
+            self.load_model();self.open_camera()
+
     def refresh_model(self):
         file=模型目录/'正式模型.pt'
         self.model_state.setText('✓ 六分类模型已加载' if self.infer else '未加载正式模型')
-        self.model_info.setText(f'{file.name}  ·  {file.stat().st_size/1024**2:.2f} MiB  ·  阈值 {self.infer.阈值:.2f}' if self.infer else '请先进入训练页。没有独立验证时不展示测试准确率。')
+        self.model_info.setText(f'{file.name} · {file.stat().st_size/1024**2:.2f} MiB · 阈值 {self.infer.阈值:.2f}' if self.infer else '没有独立验证时不展示测试准确率。'+getattr(self,'model_error',''))
         state=训练记录状态()
         for c,w in getattr(self,'model_gesture_labels',{}).items():
             w.setText(state['类别'].get(c,'未训练 · 预留'))
+
     def open_camera(self):
-        if self.cam:self.cam.release()
-        self.cam=None
-        for backend in ([cv2.CAP_DSHOW,cv2.CAP_MSMF,cv2.CAP_ANY] if sys.platform=='win32' else [cv2.CAP_ANY]):
-            cap=cv2.VideoCapture(int(self.settings['摄像头编号']),backend)
-            if cap.isOpened() and cap.read()[0]:self.cam=cap;break
-            cap.release()
-        if self.cam:self.cam.set(cv2.CAP_PROP_FRAME_WIDTH,640);self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT,480)
-        self.status.setText(('● 摄像头正常' if self.cam else '○ 摄像头未连接')+'     ·     '+('● 模型就绪' if self.infer else '○ 无模型'))
-    def on_frame(self):
-        # 侧栏切换期间跳过少量同步 CPU 推理帧，保证 Qt 动画不被摄像头/模型阻塞。
-        if self.nav_transition.state()==QAbstractAnimation.State.Running:return
-        if not self.cam:return
-        ok,frame=self.cam.read()
-        if not ok:
-            self.stop_recognition();self.camera_info.setText('摄像头读取失败，操作已停止');return
-        frame=cv2.flip(frame,1);result=None;detected=None
-        now=time.monotonic()
-        if self.running and self.stack.currentIndex()==0 and self.infer:
-            try:
-                result=self.infer.预测(frame)
-                detected=result['有效类别'];event=self.ctrl.处理(detected if detected!='无手' else None,now)
+        if self.camera_worker and self.camera_worker.isRunning():
+            self._reopen_camera=True
+            self.camera_worker.requestInterruption()
+            return
+        self.camera_online=False;self.update_status()
+        worker=CameraWorker(int(self.settings['摄像头编号']),int(self.settings.get('视频刷新毫秒',30)),
+            float(self.settings['识别区域占画面短边比例']),self.infer,
+            draw_candidate=bool(self.settings.get('显示候选手部框',True)),parent=self)
+        self.camera_worker=worker
+        worker.preview_enabled=(self.stack.currentIndex()==0)
+        worker.camera_state.connect(self._camera_state)
+        worker.frame_ready.connect(self.on_frame)
+        worker.finished.connect(lambda w=worker:self._camera_finished(w))
+        worker.start()
+
+    def _camera_state(self,ready,message):
+        self.camera_online=ready;self.update_status()
+        if not ready:
+            self.stop_recognition()
+            self.camera_info.setText(message)
+
+    def _camera_finished(self,worker):
+        if self.camera_worker is not worker:return
+        self.camera_worker=None;self.camera_online=False
+        self.update_status()
+        worker.deleteLater()
+        if self._pending_capture:
+            self._pending_capture=False
+            QTimer.singleShot(0,self._show_capture_dialog)
+        elif self._reopen_camera:
+            self._reopen_camera=False
+            self.load_model()
+            QTimer.singleShot(0,self.open_camera)
+
+    def on_frame(self,image,payload):
+        worker=self.camera_worker
+        try:
+            # During sidebar animation, don't scale a high-resolution QPixmap on the GUI thread.
+            if self.nav_transition.state()==QAbstractAnimation.State.Running:return
+            if self.stack.currentIndex()!=0:return
+            result=payload.get('inference')
+            now=payload.get('t',time.monotonic())
+            if self.running and result is not None:
+                detected=result['有效类别']
+                # Keep the camera/inference running during gesture pause so the same gesture can resume.
+                event=self.ctrl.处理(detected if detected!='无手' else None,now)
                 self.update_gesture(detected,result['置信度'])
-                self.camera_info.setText(f'FPS {self.last_fps:.1f}    ·    推理 {result["推理毫秒"]:.1f} ms    ·    阈值 {result["阈值"]:.2f}')
+                self.camera_info.setText(f'FPS {self.last_fps:.1f} · 推理 {result["推理毫秒"]:.1f} ms · 阈值 {result["阈值"]:.2f}')
                 if event:
-                    self.last_event.setText(f'✓ {event} · 来自 {detected}')
                     if event in ('已暂停','已恢复'):
-                        self.running=(event=='已恢复')
-                        self.run_btn.setText('Ⅱ 暂停识别' if self.running else '▶ 开始识别')
-            except (ValueError,RuntimeError,OSError) as e:
-                self.stop_recognition();self.camera_info.setText('推理停止：'+str(e)[:90])
-        if self.stack.currentIndex()==0:
-            x,y,x2,y2=获取识别矩形(frame,float(self.settings['识别区域占画面短边比例']))
-            cv2.rectangle(frame,(x,y),(x2,y2),(231,160,54),2)
-            if self.running and detected and detected!='无手' and self.settings.get('显示候选手部框',True):
-                candidate=self.smoother.更新(搜索候选手框(frame,float(self.settings['识别区域占画面短边比例'])))
-                if candidate:
-                    a,b,c,d=candidate;cv2.rectangle(frame,(a,b),(c,d),(55,67,239),3)
-            else:self.smoother.重置()
-            pix=QPixmap.fromImage(qimage(frame))
-            self.camera.setPixmap(pix.scaled(self.camera.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
-        self.fps_count+=1
-        if now-self.fps_start>=1:
-            self.last_fps=self.fps_count/(now-self.fps_start);self.fps_start=now;self.fps_count=0
+                        self.run_btn.setText('Ⅱ 手势暂停中 · 点击结束' if event=='已暂停' else '■ 停止识别')
+                        self.last_event.setText(f'✓ {event} · 使用食指指向可切换')
+                    elif self.image_dialog is not None and self.image_dialog.operate(event):
+                        self.last_event.setText(f'✓ 已执行 {event} · 图片窗口')
+                    else:
+                        self.last_event.setText(f'检测到 {event}，但未打开含图片的交互窗口')
+            self.camera.setPixmap(QPixmap.fromImage(image).scaled(self.camera.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
+            self.fps_count+=1
+            if now-self.fps_start>=1:
+                self.last_fps=self.fps_count/max(.01,now-self.fps_start)
+                self.fps_start=now;self.fps_count=0
+        finally:
+            if worker:worker.acknowledge()
+
     def refresh_data(self,force=False):
         if not hasattr(self,'batch_table'):return
         if not force and self.stack.currentIndex() not in (1,2):return
@@ -851,17 +907,25 @@ class GestureWindow(QWidget):
         self.data_note.setText(f'已检测到 {len(batches)} 个场景 · 导入或手动复制图片后通常 2 秒内刷新')
         if self.stack.currentIndex()==2:self.refresh_training_status()
     def import_files(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间不能修改数据。');return
         files,_=QFileDialog.getOpenFileNames(self,'选择图片',str(Path.home()),'图像文件 (*.jpg *.jpeg *.png *.bmp *.webp)')
         if files:self._do_import([Path(x) for x in files])
     def import_directory(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间不能修改数据。');return
         folder=QFileDialog.getExistingDirectory(self,'选择图片文件夹',str(Path.home()))
         if folder:self._do_import([p for p in Path(folder).rglob('*') if p.is_file() and p.suffix.lower() in 图片后缀])
     def _do_import(self,files):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间不可修改采集数据。');return
         try:stats=导入图片(files,self.data_category.currentText(),self.data_session.currentText().strip(),数据目录)
         except (ValueError,OSError) as e:QMessageBox.warning(self,'导入失败',str(e));return
         self.refresh_data(force=True)
         QMessageBox.information(self,'导入完成',f'新增 {stats["新增"]} 张，重复 {stats["重复"]} 张，无效 {stats["无效"]} 张。')
     def clear_selected(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间禁止回收数据。');return
         cat=self.data_category.currentText();ses=self.data_session.currentText().strip()
         if QMessageBox.warning(self,'回收私人数据',f'将 {cat} / {ses} 的私人照片移入本地回收站？\n只有这一种手势会被回收，其余五类和公开图片保留。',
             QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.Cancel)!=QMessageBox.StandardButton.Yes:return
@@ -869,6 +933,8 @@ class GestureWindow(QWidget):
         except (ValueError,OSError) as e:QMessageBox.warning(self,'操作失败',str(e));return
         self.refresh_data(force=True);QMessageBox.information(self,'已回收',f'已移到：\n{dest}\n可以从文件管理器恢复。')
     def clear_scene(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间禁止回收数据。');return
         scene=self.data_session.currentText().strip()
         batch=next((b for b in 场景明细(数据目录) if b['场景']==scene),None)
         if batch is None:
@@ -881,6 +947,8 @@ class GestureWindow(QWidget):
         QMessageBox.information(self,'回收完成',f'已回收 {result["回收类别数"]} 类，位置：\n{result["回收目录"]}')
 
     def clear_all(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练中','训练期间禁止回收数据。');return
         choice,ok=__import__('PySide6.QtWidgets',fromlist=['QInputDialog']).QInputDialog.getText(
             self,'清空全部私人数据','此操作会把六种手势的所有私人场景移至本地回收站。\n请输入“清空全部”确认：')
         if not ok or choice!='清空全部':return
@@ -899,11 +967,24 @@ class GestureWindow(QWidget):
         if sys.platform=='win32':os.startfile(str(path))
         else:QMessageBox.information(self,'目录路径',str(path))
     def capture(self):
-        self.stop_recognition()
-        if self.cam:self.cam.release();self.cam=None
+        if self.training_active():
+            QMessageBox.warning(self,'训练占用数据','训练期间不能采集或修改图片，请等待训练结束。');return
+        self.stop_recognition();self._pending_capture=True
+        if self.camera_worker and self.camera_worker.isRunning():
+            self.camera_worker.requestInterruption()
+        else:
+            self._pending_capture=False;self._show_capture_dialog()
+
+    def _show_capture_dialog(self):
         dialog=CaptureDialog(self)
         try:dialog.exec()
-        finally:self.open_camera();self.refresh_data(force=True)
+        finally:
+            self.open_camera();self.refresh_data(force=True)
+
+    def training_active(self):
+        return (self.proc is not None and
+                self.proc.state()!=QProcess.ProcessState.NotRunning and
+                not getattr(self,'_train_log_testing',False))
     def start_training(self,mode):
         if self.proc and self.proc.state()!=QProcess.ProcessState.NotRunning:return
         scene=self.train_scene.currentText().strip()
@@ -985,8 +1066,13 @@ class GestureWindow(QWidget):
     def closeEvent(self,e):
         if self.proc and self.proc.state()!=QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self,'训练进行中','请先停止训练任务，再关闭程序。');e.ignore();return
-        if self.cam:self.cam.release();self.cam=None
-        self.camera_timer.stop();self.data_timer.stop()
+        self.data_timer.stop()
+        if self.image_dialog:self.image_dialog.close()
+        if self.camera_worker and self.camera_worker.isRunning():
+            self.camera_worker.requestInterruption()
+            if not self.camera_worker.wait(3000):
+                QMessageBox.warning(self,'摄像头关闭中','摄像头线程仍在退出，请稍后关闭。')
+                e.ignore();return
         e.accept()
 
 
