@@ -12,6 +12,7 @@ from collections import Counter
 from pathlib import Path
 from .配置 import 类别, 数据目录, 模型目录, 输出目录, 读取配置
 from .工作台数据 import 训练样本索引
+from .训练状态 import 文件哈希
 
 
 def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cpu',data_root:Path=数据目录,model_root:Path=模型目录,output_root:Path=输出目录):
@@ -70,7 +71,7 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
     try:
         checkpoint={'权重':network.state_dict(),'类别':list(类别),'输入尺寸':size,
                     '网络结构':'轻量卷积网络','训练策略':'工作台全部训练' if mode=='all' else f'工作台专项强化：{target}',
-                    '版本':'1.4.0','用途':'单场景或指定场景训练，无独立验证'}
+                    '版本':'1.6.0','用途':'单场景或指定场景训练，无独立验证'}
         staged=staging/'正式模型.pt'
         torch.save(checkpoint,staged)
         verify,ms,meta=加载分类模型(staged,'cpu')
@@ -82,7 +83,17 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
         if official.exists():
             dest=backup_dir/(f'{stamp}-{time.time_ns()}-正式模型.pt')
             shutil.copy2(official,dest)
+            old_rec=root/'训练来源.json'
+            if old_rec.is_file():shutil.copy2(old_rec,dest.with_suffix('.json'))
         os.replace(staged,official)
+        provenance={'模型SHA256':文件哈希(official),'训练时间':time.strftime('%Y-%m-%d %H:%M:%S'),
+                    '场景':list(sessions),'模式':mode,'专项类别':target if mode=='focus' else '',
+                    '各类样本数量':dict(zip(类别,[freq[i] for i in range(len(类别))])),
+                    '提示':'已训练仅表示该类别参加训练，不代表已通过独立测试'}
+        recorded=root/'训练来源.json'
+        staged_record=staging/'训练来源.json'
+        staged_record.write_text(json.dumps(provenance,ensure_ascii=False,indent=2),encoding='utf-8')
+        os.replace(staged_record,recorded)
         # 从新数据并未得到独立阈值，不能继承冒充校准结果；保留原有阈值设置不变。
         report={'模式':mode,'专项类别':target if mode=='focus' else None,'训练场景':sessions,
                 '训练样本数':len(sample),'分类数量':dict(zip(类别,[freq[i] for i in range(6)])),

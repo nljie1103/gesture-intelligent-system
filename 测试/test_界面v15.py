@@ -17,9 +17,9 @@ def extract(name):
 
 class 界面修复测试(unittest.TestCase):
     def test_版本与五页面保持(self):
-        self.assertIn('1.5.0',(BASE/'手势系统'/'__init__.py').read_text(encoding='utf-8'))
+        self.assertIn('1.6.0',(BASE/'手势系统'/'__init__.py').read_text(encoding='utf-8'))
         self.assertIn("tabs=['首页','数据','训练','模型','设置']",SOURCE)
-        self.assertIn('v1.5.0',SOURCE)
+        self.assertIn('v1.6.0',SOURCE)
 
     def test_真正透明窗口禁用矩形系统底色(self):
         s=extract('apply_backdrop')
@@ -49,9 +49,9 @@ class 界面修复测试(unittest.TestCase):
     def test_按钮和训练文字完整(self):
         self.assertIn('min-height:42px',SOURCE)
         self.assertIn('min-height:46px',SOURCE)
-        self.assertIn('fontMetrics().horizontalAdvance(self.train_all.text())+54',SOURCE)
-        self.assertIn('self.train_all.setMinimumWidth(',SOURCE)
-        self.assertIn('self.train_one.setMinimumWidth(',SOURCE)
+        self.assertIn('fontMetrics().horizontalAdvance(button.text())+60',SOURCE)
+        self.assertIn('self.train_all=btn(',SOURCE)
+        self.assertIn('self.train_one=btn(',SOURCE)
 
     def test_自定义下拉及弹出选项(self):
         self.assertIn('class GlassComboBox(QComboBox)',SOURCE)

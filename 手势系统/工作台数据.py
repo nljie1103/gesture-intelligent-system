@@ -89,7 +89,7 @@ def 回收本地场景(category:str,session:str,root:Path=数据目录)->Path:
     root=Path(root)
     src=root/category/session
     if not src.is_dir() or src.is_symlink():raise FileNotFoundError('所选场景不存在或不是正常目录')
-    trash=root/'回收站'/time.strftime('%Y%m%d-%H%M%S')/category
+    trash=root/'回收站'/(time.strftime('%Y%m%d-%H%M%S')+'-'+str(time.time_ns()))/category
     destination=trash/session
     if destination.exists():raise FileExistsError('回收目录存在同名冲突，请稍后重试')
     destination.parent.mkdir(parents=True,exist_ok=True)
@@ -123,3 +123,46 @@ def 验证快捷键(start:str,stop:str):
     if not valid.fullmatch(start.upper()) or not valid.fullmatch(stop.upper()) or start.upper()==stop.upper():
         raise ValueError('快捷键须为不同的字母、数字或 F1~F12')
     return start.upper(),stop.upper()
+
+
+def 场景明细(root:Path=数据目录)->list[dict]:
+    """按场景列出各手势图片数；只统计本地私有数据，不扫描公开集或回收站。"""
+    root=Path(root)
+    per_scene={}
+    for gesture in 类别:
+        folder=root/gesture
+        if not folder.is_dir() or folder.is_symlink():continue
+        for scene in folder.iterdir():
+            if not scene.is_dir() or scene.is_symlink():continue
+            try:验证轮次(scene.name)
+            except ValueError:continue
+            count=sum(1 for file in scene.iterdir()
+                      if file.is_file() and not file.is_symlink() and file.suffix.lower() in 图片后缀)
+            per_scene.setdefault(scene.name,{key:0 for key in 类别})[gesture]=count
+    return [{'场景':scene,'手势':counts,'合计':sum(counts.values())}
+            for scene,counts in sorted(per_scene.items())]
+
+
+def 回收整个场景(session:str,root:Path=数据目录)->dict:
+    """按类别将同名场景移到本地回收站的同一批次；不触及公开训练图。"""
+    验证轮次(session);root=Path(root)
+    sources=[]
+    for gesture in 类别:
+        parent=root/gesture;source=parent/session
+        if parent.is_symlink() or source.is_symlink():raise ValueError('发现符号链接，拒绝移动')
+        if source.is_dir():sources.append((gesture,source))
+    if not sources:raise FileNotFoundError('所选场景不存在')
+    base=root/'回收站'/(time.strftime('%Y%m%d-%H%M%S')+'-'+str(time.time_ns()))
+    moved={}
+    try:
+        for gesture,source in sources:
+            dest=base/gesture/session;dest.parent.mkdir(parents=True,exist_ok=True)
+            shutil.move(str(source),str(dest));moved[gesture]=str(dest)
+    except Exception:
+        # 同一磁盘内移动目录通常是原子操作；若出现异常，优先恢复已经移动的类别。
+        for gesture,destination in list(moved.items())[::-1]:
+            original=root/gesture/session
+            if not original.exists() and Path(destination).exists():
+                shutil.move(destination,original)
+        raise
+    return {'场景':session,'各类回收位置':moved,'回收类别数':len(moved),'回收目录':str(base)}
