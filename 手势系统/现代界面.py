@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import Qt, QPoint, QTimer, QProcess, QProcessEnvironment, QFileSystemWatcher, QSize, QRectF, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation, QByteArray
+from PySide6.QtCore import Qt, QPoint, QTimer, QThread, Signal, QProcess, QProcessEnvironment, QFileSystemWatcher, QSize, QRectF, QEasingCurve, QPropertyAnimation, QParallelAnimationGroup, QAbstractAnimation, QByteArray
 from PySide6.QtGui import (QColor,QFont,QIcon,QImage,QKeySequence,QLinearGradient,
                            QPainter,QPainterPath,QPixmap,QRadialGradient,QShortcut,QPen)
 from PySide6.QtSvg import QSvgRenderer
@@ -33,6 +33,9 @@ from .工作台数据 import (样本汇总,场景明细,导入图片,回收本�
 from .训练状态 import 训练记录状态
 from .训练日志编码 import 训练日志解码器, 配置训练子进程编码
 from .相机线程 import CameraWorker
+from .公开资源线程 import PublicImportWorker
+from .公开数据 import 导入公开子集
+from .手部定位 import 包含定位资源,读取训练输入策略,策略标识
 from .图片交互 import ImageControlDialog
 
 NAVY='#25334C'; MUTED='#63718B'; BLUE='#3978EF'; GREEN='#1DAA79'
@@ -250,6 +253,18 @@ class Titlebar(QFrame):
     def mouseDoubleClickEvent(self,e):self.host.toggle_max()
 
 
+class HandSetupWorker(QThread):
+    message=Signal(str)
+    succeeded=Signal()
+    failed=Signal(str)
+    def run(self):
+        try:
+            from .手部组件安装 import 安装
+            安装(on_progress=self.message.emit)
+            self.succeeded.emit()
+        except Exception as exc:self.failed.emit(str(exc))
+
+
 class CaptureDialog(QDialog):
     """Single owner of the camera while capture is open. User-defined shortcuts are scoped here."""
     def __init__(self,host):
@@ -275,6 +290,10 @@ class CaptureDialog(QDialog):
             controls.addWidget(label(name,dim=True),i//4*2,i%4)
             controls.addWidget(w,i//4*2+1,i%4)
         layout.addLayout(controls)
+        self.hand_capture=QCheckBox('采用手部关键点定位采集：只保存手附近区域（需先在设置页安装定位组件）')
+        self.hand_capture.setChecked(False)
+        layout.addWidget(self.hand_capture)
+        layout.addWidget(label('建议把手完整放进绿色区域，手离镜头适当远；头和上半身可出现，但不要遮挡手。开启关键点采集后，必须在训练页选相同裁剪模式并从零训练。',dim=True))
         self.preview=QLabel('摄像头初始化中…');self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(330);self.preview.setStyleSheet('background:#13253B;color:white;border-radius:18px;')
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
@@ -296,10 +315,26 @@ class CaptureDialog(QDialog):
         buttons.addWidget(self.done_btn,2)
         layout.addLayout(buttons)
         self.shortcuts=[];self.hot_start.setText('S');self.hot_stop.setText('E')
+        self.hand_capture.toggled.connect(self._switch_capture_mode)
+        self.open_camera()
+    def _switch_capture_mode(self,checked):
+        if self.active or self.preparing or self.seq:
+            QMessageBox.information(self,'先结束采集','正在采集时不能修改手部裁剪模式。')
+            self.hand_capture.blockSignals(True);self.hand_capture.setChecked(not checked);self.hand_capture.blockSignals(False)
+            return
+        if checked and not 包含定位资源():
+            QMessageBox.warning(self,'缺少定位组件','请先返回设置页，点击“安装手部定位组件”。')
+            self.hand_capture.blockSignals(True);self.hand_capture.setChecked(False);self.hand_capture.blockSignals(False)
+            return
+        if self.capture_worker and self.capture_worker.isRunning():
+            self.capture_worker.requestInterruption()
+            if not self.capture_worker.wait(3500):
+                QMessageBox.warning(self,'摄像头未释放','摄像头仍在关闭，请重新打开采集窗口。');return
         self.open_camera()
     def open_camera(self):
         self.capture_worker=CameraWorker(int(self.host.settings.get('摄像头编号',0)),
-            33,float(self.host.settings.get('识别区域占画面短边比例',.78)),capture_mode=True,parent=self)
+            33,float(self.host.settings.get('识别区域占画面短边比例',.78)),capture_mode=True,
+            hand_capture=self.hand_capture.isChecked(),parent=self)
         self.capture_worker.camera_state.connect(self._camera_state)
         self.capture_worker.frame_ready.connect(self.tick)
         self.capture_worker.start()
@@ -336,7 +371,7 @@ class CaptureDialog(QDialog):
                 if occupied:
                     raise ValueError('目标采集目录已存在图片：'+', '.join(occupied[:4])+'。请更换场景名称，防止混入旧轮次。')
                 self.seq=proposed
-                for field in [self.pick,self.scene,self.scenes,self.fps,self.count,self.hot_start,self.hot_stop]:field.setEnabled(False)
+                for field in [self.pick,self.scene,self.scenes,self.fps,self.count,self.hot_start,self.hot_stop,self.hand_capture]:field.setEnabled(False)
                 self.info.setText(f'采集队列已建立，{len(self.seq)} 个手势/场景组合；{start} 开始 / {stop} 停止')
             except ValueError as e:QMessageBox.warning(self,'参数错误',str(e));return
         self._begin_countdown()
@@ -378,14 +413,39 @@ class CaptureDialog(QDialog):
         try:
             frame=payload.get('raw_frame')
             if frame is None:return
+            # Refresh preview even when a sample is skipped because the detected hand is absent.
+            q=QPixmap.fromImage(image)
+            self.preview.setPixmap(q.scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
             x1,y1,x2,y2=获取识别矩形(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
             if self.active and self.index<len(self.seq):
                 now=time.monotonic()
                 if now-self.last_saved>=1./self.fps.value():
                     gesture,session=self.seq[self.index]
-                    cropped=裁剪手势(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
+                    hand_box=payload.get('hand_box')
+                    if self.hand_capture.isChecked():
+                        # Positive classes: never silently save a whole body when hand detection misses.
+                        if gesture!='无手' and hand_box is None:
+                            self.info.setText(f'等待检测到【{gesture}】的手部… 请在绿色框内保持完整手掌')
+                            return
+                        # For the negative class, a detected hand would be a mislabeled sample.
+                        if gesture=='无手' and hand_box is not None:
+                            self.info.setText('无手采集中：检测到手，请把双手移出画面后再采集')
+                            return
+                        if hand_box is not None:
+                            a,b,c,d=hand_box
+                            import cv2
+                            from PIL import Image
+                            cropped=Image.fromarray(cv2.cvtColor(frame[b:d,a:c],cv2.COLOR_BGR2RGB))
+                        else:
+                            cropped=裁剪手势(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
+                    else:
+                        cropped=裁剪手势(frame,float(self.host.settings.get('识别区域占画面短边比例',.78)))
                     folder=数据目录/gesture/session;folder.mkdir(parents=True,exist_ok=True)
                     name=folder/f'cap_{time.time_ns()}_{self.saved+1:05d}.jpg'
+                    if self.hand_capture.isChecked():
+                        marker=folder/'.输入策略.json'
+                        if not marker.exists():
+                            marker.write_text(json.dumps({'输入策略':策略标识,'来源':'手部定位采集'},ensure_ascii=False),encoding='utf-8')
                     cropped.save(name,quality=92)
                     self.saved+=1;self.last_saved=now
                     self.info.setText(f'正在拍摄 {gesture} / {session}  ·  {self.saved}/{self.count.value()} 张  ·  任务 {self.index+1}/{len(self.seq)}')
@@ -401,8 +461,6 @@ class CaptureDialog(QDialog):
                             self.capture_prompt.setText(f'下一组：请准备【{c}】 · {s}')
                             self.info.setText(f'✓ 上一组完成！请先调整姿势为【{c}】，点击下一组后还有 3 秒准备时间。')
                             self.go.setEnabled(True);self.go.setText('▶ 开始下一组（3秒准备）')
-            q=QPixmap.fromImage(image)
-            self.preview.setPixmap(q.scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
         finally:
             if self.capture_worker:self.capture_worker.acknowledge()
     def done(self,result):
@@ -662,7 +720,64 @@ class GestureWindow(QWidget):
         line.addStretch()
         self.data_note=label('每约 2 秒重新统计；回收的私人照片保留在本地回收站。',dim=True)
         imports.layout().addWidget(self.data_note)
+        public=panel();v.addWidget(public)
+        public.layout().addWidget(label('HaGRID 公开训练数据 · 手动获取',title=True))
+        public.layout().addWidget(label('不自动下载。点击下方按钮才会联网下载约 402 MB 的公开 ZIP，校验 SHA256 后只导入五类手部裁剪样本。已有公开数据不会重复下载。',dim=True))
+        line=QHBoxLayout();public.layout().addLayout(line)
+        self.public_download_btn=btn('下载并导入公开数据',self.download_public)
+        line.addWidget(self.public_download_btn)
+        line.addWidget(btn('从本地 ZIP 导入',self.import_public_zip))
+        self.public_cancel_btn=btn('取消下载',self.cancel_public);self.public_cancel_btn.setEnabled(False)
+        line.addWidget(self.public_cancel_btn);line.addStretch()
+        self.public_status=label('未开始公开数据下载；训练时是否使用公开数据由训练页勾选决定。',dim=True)
+        public.layout().addWidget(self.public_status)
+        self.public_worker=None
         v.addStretch()
+
+    def download_public(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练进行中','请先完成训练再导入公开数据。');return
+        if (数据目录/'公开训练').exists() or (数据目录/'公开数据清单.json').exists():
+            QMessageBox.information(self,'公开数据已存在','已经有公开数据，无需重复下载。可在训练页自行决定是否参与。');return
+        answer=QMessageBox.question(self,'手动下载公开数据','这将从 Hugging Face 下载约 402 MB 的 HaGRID 数据 ZIP；仅在确认后联网。继续？')
+        if answer!=QMessageBox.StandardButton.Yes:return
+        worker=PublicImportWorker(self);self.public_worker=worker
+        self.public_download_btn.setEnabled(False);self.public_cancel_btn.setEnabled(True)
+        self.public_status.setText('正在下载公开数据… 0 MB')
+        worker.progress.connect(lambda n:self.public_status.setText(f'已下载 {n/1048576:.1f} MB / 约 402 MB'))
+        worker.success.connect(self._public_success)
+        worker.failed.connect(self._public_failed)
+        worker.finished.connect(self._public_finished)
+        worker.start()
+    def _public_success(self,stats):
+        self.public_status.setText('✓ 公开数据已通过校验并导入；默认仍不参与训练。')
+        self.refresh_data(force=True)
+        QMessageBox.information(self,'导入完成',str(stats.get('各类数量',{})))
+    def _public_failed(self,message):
+        self.public_status.setText('导入中止：'+message[:170])
+        QMessageBox.warning(self,'公开数据导入未完成',message[:550])
+    def _public_finished(self):
+        self.public_download_btn.setEnabled(True);self.public_cancel_btn.setEnabled(False)
+        worker=self.public_worker
+        self.public_worker=None
+        if worker:worker.deleteLater()
+    def cancel_public(self):
+        if self.public_worker:self.public_worker.request_cancel();self.public_status.setText('正在取消下载…')
+    def import_public_zip(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练进行中','请先完成训练再导入。');return
+        if self.public_worker and self.public_worker.isRunning():return
+        path,_=QFileDialog.getOpenFileName(self,'选择 HaGRID 公开压缩包',str(Path.home()),'ZIP 文件 (*.zip)')
+        if not path:return
+        if (数据目录/'公开训练').exists() or (数据目录/'公开数据清单.json').exists():
+            QMessageBox.warning(self,'公开数据已存在','为避免覆盖已有公开数据，不允许重复导入。');return
+        worker=PublicImportWorker(self,local_zip=Path(path));self.public_worker=worker
+        self.public_download_btn.setEnabled(False);self.public_cancel_btn.setEnabled(False)
+        self.public_status.setText('正在后台检查并导入本地 ZIP…')
+        worker.success.connect(self._public_success)
+        worker.failed.connect(self._public_failed)
+        worker.finished.connect(self._public_finished)
+        worker.start()
 
     def _choose_batch_cell(self,row,column):
         if row<0 or row>=self.batch_table.rowCount():return
@@ -675,12 +790,20 @@ class GestureWindow(QWidget):
         v=self._scroll_content(base)
         train=panel();v.addWidget(train)
         train.layout().addWidget(label('选择训练数据',title=True))
-        train.layout().addWidget(label('默认累计使用所有本地场景及公开训练图片，并从上一版六分类权重继续训练；也可明确选用单个场景。',dim=True))
+        train.layout().addWidget(label('默认累计使用全部私人场景；公开数据是可选项，只有勾选才参与。继续训练已有六分类模型。',dim=True))
         row=QHBoxLayout();train.layout().addLayout(row)
         self.train_scene=GlassComboBox();self.train_scene.setEditable(False);self.train_scene.addItem('全部场景（累计训练）')
         self.focus_cat=GlassComboBox();self.focus_cat.addItems(类别)
         row.addWidget(label('场景'));row.addWidget(self.train_scene,2)
         row.addWidget(label('专项动作'));row.addWidget(self.focus_cat,2)
+        self.train_include_public=QCheckBox('本轮训练包含已手动导入的 HaGRID 公开样本（默认不选）')
+        self.train_include_public.setChecked(False)
+        train.layout().addWidget(self.train_include_public)
+        self.train_from_scratch=QCheckBox('从零训练：不加载旧模型参数（彻底消除旧训练来源的影响）')
+        train.layout().addWidget(self.train_from_scratch)
+        self.train_hand_crop=QCheckBox('实验性手部关键点裁剪：五种手势只提取手部；无手保留背景（需安装 MediaPipe，且必须从零训练）')
+        train.layout().addWidget(self.train_hand_crop)
+        self.train_hand_crop.toggled.connect(lambda checked:self.train_from_scratch.setChecked(True) if checked else None)
         row=QHBoxLayout();train.layout().addLayout(row)
         self.train_epoch=QSpinBox();self.train_epoch.setRange(1,200);self.train_epoch.setValue(8)
         self.train_device=GlassComboBox();self.train_device.addItems(['CPU','CUDA（可用时）'])
@@ -779,10 +902,27 @@ class GestureWindow(QWidget):
             self.inputs[key]=w
         self.show_box=QCheckBox('显示红色候选手部位置框（非精确检测框）')
         card.layout().addWidget(self.show_box)
+        card.layout().addWidget(label('手部精确定位组件（可选；不随软件自动下载）',title=True))
+        self.hand_setup_status=label('已检测到模型资源' if 包含定位资源() else '未安装：旧版固定 ROI 识别仍可正常使用',dim=True)
+        card.layout().addWidget(self.hand_setup_status)
+        card.layout().addWidget(btn('安装手部定位组件（约 8 MB 模型 + Python 依赖）',self.install_hand_component))
+        self.hand_setup_worker=None
         row=QHBoxLayout();row.addStretch();row.addWidget(btn('恢复未保存值',self.load_settings));row.addWidget(btn('保存并应用',self.save_settings,primary=True))
         card.layout().addLayout(row)
         card.layout().addStretch()
         self.load_settings()
+    def install_hand_component(self):
+        if self.hand_setup_worker and self.hand_setup_worker.isRunning():return
+        if QMessageBox.question(self,'安装手部定位','此操作将通过 pip 安装 MediaPipe，并从 Google 官方下载约 8 MB 手部关键点模型。不会下载 HaGRID 数据。继续？')!=QMessageBox.StandardButton.Yes:return
+        worker=HandSetupWorker(self);self.hand_setup_worker=worker
+        worker.message.connect(self.hand_setup_status.setText)
+        worker.succeeded.connect(lambda:self.hand_setup_status.setText('✓ 手部定位组件安装完成；新输入策略需要从零重训'))
+        worker.failed.connect(lambda msg:self.hand_setup_status.setText('安装失败：'+msg[:160]))
+        worker.finished.connect(lambda w=worker:self._hand_setup_finished(w))
+        worker.start()
+    def _hand_setup_finished(self,worker):
+        if self.hand_setup_worker is worker:self.hand_setup_worker=None
+        worker.deleteLater()
     def load_settings(self):
         for k,w in self.inputs.items():w.setText('' if self.settings.get(k) is None else str(self.settings[k]))
         self.show_box.setChecked(bool(self.settings.get('显示候选手部框',True)))
@@ -1081,11 +1221,26 @@ class GestureWindow(QWidget):
         if mode=='focus' and not (模型目录/'正式模型.pt').exists():
             QMessageBox.warning(self,'需要模型','请先训练全部六类，再对单个类别进行专项强化');return
         target=self.focus_cat.currentText()
-        msg=(f'使用 {len(sessions)} 个场景（{"、".join(sessions)}）及公开数据继续训练六分类 CNN。' if mode=='all' else f'专项强化 {target}；使用 {len(sessions)} 个场景并重放其余类别。')
+        use_public=self.train_include_public.isChecked()
+        from_scratch=self.train_from_scratch.isChecked()
+        hand_crop=self.train_hand_crop.isChecked()
+        if mode=='focus' and from_scratch:
+            QMessageBox.warning(self,'训练选项冲突','专项强化需要旧模型权重，不能同时选择从零训练。');return
+        if hand_crop and not 包含定位资源():
+            QMessageBox.warning(self,'缺少手部模型','请到设置页点击“安装手部定位组件”，完成后再选择手部裁剪训练。');return
+        if use_public and not (数据目录/'公开训练').is_dir():
+            QMessageBox.warning(self,'没有公开数据','请先在数据页点击“下载并导入公开数据”，或取消勾选。');return
+        msg=(f'使用 {len(sessions)} 个本地场景（{"、".join(sessions)}）继续训练六分类 CNN。' if mode=='all' else f'专项强化 {target}；使用 {len(sessions)} 个本地场景并重放其余类别。')
+        msg+='\n公开数据：'+('本轮参加' if use_public else '本轮不参加')
+        msg+='\n旧模型权重：'+('从零开始，不继承旧数据的训练影响' if from_scratch else '继续使用旧权重（即使不选公开数据，也可能继承之前训练的特征）')
+        if hand_crop:msg+='\n输入方式：真实关键点定位手部；未定位正样本将跳过。'
         msg+='\n旧模型会备份。没有独立验证集，本次结果只供演示。\n确认开始？'
         if QMessageBox.question(self,'启动训练',msg)!=QMessageBox.StandardButton.Yes:return
         args=['-X','utf8','-u','-m','手势系统.工作台训练','--mode',mode,'--sessions',*sessions,'--epochs',str(self.train_epoch.value()),
               '--device','cuda' if self.train_device.currentIndex() else 'cpu']
+        if use_public:args+=['--include-public']
+        if from_scratch:args+=['--from-scratch']
+        if hand_crop:args+=['--hand-crop']
         if mode=='focus':args+=['--target',target]
         self._launch_training_process(args,testing=False)
 
@@ -1144,6 +1299,10 @@ class GestureWindow(QWidget):
     def closeEvent(self,e):
         if self.proc and self.proc.state()!=QProcess.ProcessState.NotRunning:
             QMessageBox.warning(self,'训练进行中','请先停止训练任务，再关闭程序。');e.ignore();return
+        if self.hand_setup_worker and self.hand_setup_worker.isRunning():
+            QMessageBox.warning(self,'定位组件安装中','请等待组件安装完成再退出。');e.ignore();return
+        if self.public_worker and self.public_worker.isRunning():
+            QMessageBox.warning(self,'下载进行中','请先取消公开数据下载，完成线程退出后再关闭。');e.ignore();return
         self.data_timer.stop()
         if self.image_dialog:self.image_dialog.close()
         if self.camera_worker and self.camera_worker.isRunning():

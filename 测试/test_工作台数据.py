@@ -38,7 +38,7 @@ class WorkbenchDataTests(unittest.TestCase):
             Image.new('RGB',(40,40)).save(public/'public.jpg')
             stats=样本汇总(root)
             self.assertEqual((stats['本地合计'],stats['公开合计']),(6,1))
-            entries=训练样本索引(['场景01'],root)
+            entries=训练样本索引(['场景01'],root,include_public=True)
             self.assertEqual(len(entries),7)
             self.assertEqual({idx for _,idx in entries},set(range(6)))
             with self.assertRaises(ValueError):训练样本索引(['../other'],root)

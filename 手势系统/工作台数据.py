@@ -100,7 +100,7 @@ def 回收本地场景(category:str,session:str,root:Path=数据目录)->Path:
     return destination
 
 
-def 训练样本索引(sessions:list[str],root:Path=数据目录,include_public:bool=True):
+def 训练样本索引(sessions:list[str],root:Path=数据目录,include_public:bool=False):
     root=Path(root)
     sessions=list(dict.fromkeys(验证轮次(x) for x in sessions))
     if not sessions:raise ValueError('至少选择一个训练场景')

@@ -27,7 +27,7 @@ class 场景与累计训练测试(unittest.TestCase):
                 for scene in ['场景01','场景02','场景03']:
                     d=root/c/scene;d.mkdir(parents=True);Image.new('RGB',(48,48)).save(d/'a.jpg')
             pub=root/'公开训练'/类别[0];pub.mkdir(parents=True);Image.new('RGB',(48,48)).save(pub/'a.jpg')
-            sample=训练样本索引(['场景01','场景02','场景03'],root)
+            sample=训练样本索引(['场景01','场景02','场景03'],root,include_public=True)
             self.assertEqual(len(sample),19)
             self.assertEqual(len({x.split('/')[1] for x,_ in sample if not x.startswith('公开训练/')}),3)
 
@@ -55,11 +55,11 @@ class 场景与累计训练测试(unittest.TestCase):
     def test_训练继续使用旧权重(self):
         s=(ROOT/'手势系统/工作台训练.py').read_text('utf-8')
         self.assertIn('prior_sha=文件哈希(official)',s)
-        self.assertIn('network,loaded_size,_=加载分类模型(official,device)',s)
-        self.assertIn("'初始化模型SHA256':prior_sha",s)
+        self.assertIn('network,loaded_size,old_meta=加载分类模型(official,device)',s)
+        self.assertIn("'初始化模型SHA256':None if from_scratch else prior_sha",s)
 
     def test_版本统一(self):
         from 手势系统.版本 import VERSION
-        self.assertEqual(VERSION,'2.2.0')
+        self.assertEqual(VERSION,'2.3.0')
 
 if __name__=='__main__':unittest.main()
