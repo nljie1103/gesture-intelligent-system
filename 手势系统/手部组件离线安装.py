@@ -15,7 +15,8 @@ import traceback
 from .版本 import VERSION
 
 
-def wait_for_parent(pid:int, timeout_ms=180000):
+def wait_for_parent(pid:int, timeout_ms=60000):
+    """Bounded Windows process wait, with visible heartbeats and no cv2 import."""
     if not pid or pid==os.getpid():raise RuntimeError('无效的父进程编号')
     if os.name=='nt':
         import ctypes
@@ -26,28 +27,65 @@ def wait_for_parent(pid:int, timeout_ms=180000):
         kernel.WaitForSingleObject.restype=ctypes.c_ulong
         kernel.CloseHandle.argtypes=(ctypes.c_void_p,)
         handle=kernel.OpenProcess(0x00100000, False, pid)
-        if handle:
+        if not handle:
+            # ERROR_INVALID_PARAMETER means the original process already exited.
+            error=ctypes.get_last_error() if hasattr(ctypes,'get_last_error') else kernel.GetLastError()
+            if error!=87:raise OSError('无法打开父进程 PID '+str(pid)+'；Windows 错误 '+str(error))
+            print('主程序 PID 已退出。',flush=True)
+        else:
+            WAIT_TIMEOUT = 258
             try:
-                status=kernel.WaitForSingleObject(handle,timeout_ms)
-                if status!=0:raise TimeoutError('主程序关闭超时或进程等待失败：'+str(status))
+                iterations=max(1,(timeout_ms+999)//1000)
+                for elapsed in range(iterations):
+                    status=kernel.WaitForSingleObject(handle,1000)
+                    if status==0:break
+                    if status!=WAIT_TIMEOUT:raise RuntimeError('Windows 等待主进程失败：'+str(status))
+                    if (elapsed+1)%5==0:
+                        print(f'等待主程序 PID {pid} 退出：已等待 {elapsed+1} 秒',flush=True)
+                else:
+                    raise TimeoutError('主程序等待超过 60 秒；不会在 cv2.pyd 被占用时修改依赖。请检查剩余 Gesture Studio 进程。')
             finally:kernel.CloseHandle(handle)
     else:
-        for _ in range(int(timeout_ms/1000)):
+        for elapsed in range(max(1,(timeout_ms+999)//1000)):
             try:os.kill(pid,0)
             except ProcessLookupError:break
+            if elapsed and elapsed%5==0:print('等待主程序 PID '+str(pid)+' 退出…',flush=True)
             time.sleep(1)
         else:raise TimeoutError('主程序未退出')
-    time.sleep(1.0)  # Allow Windows to release DLL handles.
+    time.sleep(1.0)
 
 
 def run_pip(args, log):
+    """Stream pip output, enforce a real deadline, and never hang on an empty pipe."""
+    import queue
+    import threading
     cmd=[sys.executable, '-m', 'pip', *args]
     log('执行：python -m pip '+' '.join(args))
     process=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-        text=True,encoding='utf-8',errors='replace',env={**os.environ,'PYTHONUTF8':'1'})
-    for line in process.stdout:log(line.rstrip())
-    result=process.wait(timeout=360)
-    if result:raise RuntimeError('pip 退出码：'+str(result))
+        text=True,encoding='utf-8',errors='replace',bufsize=1,
+        env={**os.environ,'PYTHONUTF8':'1','PYTHONUNBUFFERED':'1'})
+    events=queue.Queue()
+    def pump():
+        try:
+            for line in process.stdout:events.put(line)
+        finally:events.put(None)
+    threading.Thread(target=pump,daemon=True).start()
+    start=time.monotonic();last_heartbeat=start
+    try:
+        while True:
+            if time.monotonic()-start>360:raise TimeoutError('pip 子进程运行超过 360 秒')
+            try:line=events.get(timeout=1)
+            except queue.Empty:
+                if time.monotonic()-last_heartbeat>=10:
+                    log('pip 正在运行，等待新的安装输出…');last_heartbeat=time.monotonic()
+                continue
+            if line is None:break
+            if line.strip():log(line.rstrip())
+        result=process.wait(timeout=20)
+        if result:raise RuntimeError('pip 退出码：'+str(result))
+    finally:
+        if process.poll() is None:
+            process.kill();process.wait()
 
 
 def install_offline(folder:Path, log):

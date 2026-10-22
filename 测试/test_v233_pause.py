@@ -18,7 +18,7 @@ class GesturePauseTests(unittest.TestCase):
     def func(self,name):
         return ast.get_source_segment(self.source,next(n for n in self.ui.body if isinstance(n,ast.FunctionDef) and n.name==name))
     def test_default_disabled_in_config_and_example(self):
-        self.assertEqual(VERSION,'2.3.3')
+        self.assertEqual(VERSION,'2.3.4')
         self.assertIs(默认配置['允许食指手势暂停'],False)
         settings=json.loads((ROOT/'设置.example.json').read_text(encoding='utf-8'))
         self.assertIs(settings['允许食指手势暂停'],False)

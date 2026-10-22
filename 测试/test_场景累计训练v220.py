@@ -60,6 +60,6 @@ class 场景与累计训练测试(unittest.TestCase):
 
     def test_版本统一(self):
         from 手势系统.版本 import VERSION
-        self.assertEqual(VERSION,'2.3.3')
+        self.assertEqual(VERSION,'2.3.4')
 
 if __name__=='__main__':unittest.main()

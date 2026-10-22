@@ -39,7 +39,7 @@ class 手部定位器:
             raise RuntimeError('未安装 mediapipe；请在设置页安装手部定位组件') from e
         self.mp=mp
         options=vision.HandLandmarkerOptions(
-            base_options=python.BaseOptions(model_asset_path=str(self.path)),
+            base_options=python.BaseOptions(model_asset_buffer=self.path.read_bytes()),
             running_mode=vision.RunningMode.IMAGE,
             num_hands=1,min_hand_detection_confidence=.55,
             min_hand_presence_confidence=.5)

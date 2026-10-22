@@ -1103,14 +1103,15 @@ class GestureWindow(QWidget):
             return
         command=[sys.executable,'-X','utf8','-m','手势系统.手部组件离线安装',
                  '--parent-pid',str(os.getpid()),'--wheel-dir',str(WHEEL_DIR),'--root',str(根目录)]
-        try:
-            subprocess.Popen(command,cwd=str(根目录),stdin=subprocess.DEVNULL,
-                creationflags=getattr(subprocess,'CREATE_NEW_CONSOLE',0))
-        except OSError as exc:
-            QMessageBox.warning(self,'无法启动独立安装进程',str(exc));return
-        # closeEvent waits for the camera thread to relinquish cv2.pyd.
-        self.hand_setup_status.setText('已启动独立安装进程，正在关闭主程序…')
-        self.close()
+        # v2.3.4: do not create the sidecar until the Qt event loop has returned.
+        # Closing the last GUI window is not, by itself, a guarantee that cv2.pyd
+        # has been released by the Python process.
+        self._pending_hand_setup_command=command
+        self.hand_setup_status.setText('正在关闭摄像头并退出主程序…')
+        if not self.close():
+            self._pending_hand_setup_command=None
+            return
+        QApplication.instance().quit()
 
     def load_settings(self):
         for k,w in self.inputs.items():w.setText('' if self.settings.get(k) is None else str(self.settings[k]))
@@ -1516,4 +1517,21 @@ def run():
     app.setApplicationName('Gesture Studio')
     window=GestureWindow();window.show()
     QTimer.singleShot(0,window.apply_backdrop)
-    return app.exec()
+    exit_code=app.exec()
+    command=getattr(window,'_pending_hand_setup_command',None)
+    if command:
+        # Qt and camera workers have already exited. Spawn the sidecar and
+        # terminate this interpreter so Windows will unload cv2.pyd for pip.
+        try:
+            subprocess.Popen(command,cwd=str(根目录),stdin=subprocess.DEVNULL,
+                creationflags=getattr(subprocess,'CREATE_NEW_CONSOLE',0),
+                close_fds=True)
+        except OSError as exc:
+            logfile=根目录/'.发布'/'手部组件最近安装.log'
+            logfile.parent.mkdir(parents=True,exist_ok=True)
+            with logfile.open('a',encoding='utf-8') as stream:
+                stream.write('无法启动独立安装器：'+str(exc)+'\n')
+            raise
+        sys.stdout.flush();sys.stderr.flush()
+        os._exit(0)
+    return exit_code
