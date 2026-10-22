@@ -39,7 +39,8 @@ class UIV16Tests(unittest.TestCase):
     def test_单场景选定校验(self):
         start=get_method('start_training')
         self.assertIn('missing=[c for c in 类别',start)
-        self.assertIn('batch[\'手势\'].get(focus,0)==0',start)
+        self.assertIn('combined[focus]==0',start)
+        self.assertIn('sessions=all_scenes',start)
     def test_场景矩阵和单手势回收不影响其它类别(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

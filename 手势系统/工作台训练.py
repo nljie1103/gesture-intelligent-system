@@ -41,12 +41,16 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
     Set(20261016)
     torch.set_num_threads(max(1,min(4,os.cpu_count() or 1)))
     size=int(读取配置().get('模型输入尺寸',96))
-    if mode=='focus':
-        if not official.exists():raise ValueError('专项强化需要已有的六分类模型；请先执行全部训练')
+    prior_sha=文件哈希(official) if official.is_file() else None
+    if mode=='focus' and not prior_sha:raise ValueError('专项强化需要已有的六分类模型；请先执行全部训练')
+    if prior_sha:
         network,loaded_size,_=加载分类模型(official,device)
         size=loaded_size
-        print('专项模式：现有六分类网络 + 目标手势增强采样 + 其他五类重放',flush=True)
-    else:network=轻量卷积网络(len(类别)).to(device)
+        print('继续训练：加载已有六分类权重，并使用所选全部场景与公开数据重放。',flush=True)
+    else:
+        network=轻量卷积网络(len(类别)).to(device)
+        print('首次训练：没有正式模型，从随机初始化的六分类 CNN 开始。',flush=True)
+    if mode=='focus':print('专项模式：目标手势增强采样 + 其他五类重放',flush=True)
     rng=random.Random(20261016)
     # 采样平衡：每类基础权重相当；指定类别提高到2.2倍，同时持续回放其余类别。
     weights=[(2.2 if mode=='focus' and y==类别.index(target) else 1.)/freq[y] for _,y in sample]
@@ -63,7 +67,7 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
     try:
         train_data=手势数据集(sample,目录=staging/'数据快照',尺寸=size,增强=True)
         loader=DataLoader(train_data,batch_size=32,sampler=sampler,num_workers=0)
-        optimizer=torch.optim.Adam(network.parameters(),lr=.00012 if mode=='focus' else .0008)
+        optimizer=torch.optim.Adam(network.parameters(),lr=.00012 if mode=='focus' else (.00015 if prior_sha else .0008))
         started=time.time();records=[]
         for epoch in range(1,epochs+1):
             network.train();seen=correct=0;loss_sum=0.
@@ -80,7 +84,7 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
             records.append(entry)
             print(f'[{epoch}/{epochs}] loss={entry["train_loss"]:.4f} 训练准确率={entry["train_acc_not_test"]:.1%}（非测试）',flush=True)
         checkpoint={'权重':network.state_dict(),'类别':list(类别),'输入尺寸':size,
-                    '网络结构':'轻量卷积网络','训练策略':'工作台全部训练' if mode=='all' else f'工作台专项强化：{target}',
+                    '网络结构':'轻量卷积网络','训练策略':('累计继续训练' if prior_sha else '初始训练') if mode=='all' else f'累计专项强化：{target}',
                     '版本':VERSION,'用途':'单场景或指定场景训练，无独立验证'}
         staged=staging/'正式模型.pt'
         torch.save(checkpoint,staged)
@@ -91,12 +95,13 @@ def 训练(mode:str,sessions:list[str],target:str='',epochs:int=8,device:str='cp
         stamp=time.strftime('%Y%m%d-%H%M%S')
         provenance={'模型SHA256':文件哈希(staged),'训练时间':time.strftime('%Y-%m-%d %H:%M:%S'),
                     '场景':list(sessions),'模式':mode,'专项类别':target if mode=='focus' else '',
+                    '初始化模型SHA256':prior_sha,'累计训练':len(sessions)>1,'有效图像数':len(sample),
                     '各类样本数量':dict(zip(类别,[freq[i] for i in range(len(类别))])),
                     '提示':'已训练仅表示该类别参加训练，不代表已通过独立测试'}
         staged_record=staging/'训练来源.json'
         staged_record.write_text(json.dumps(provenance,ensure_ascii=False,indent=2),encoding='utf-8')
         report={'模式':mode,'专项类别':target if mode=='focus' else None,'训练场景':sessions,
-                '训练样本数':len(sample),'分类数量':dict(zip(类别,[freq[i] for i in range(6)])),
+                '训练样本数':len(sample),'初始化模型SHA256':prior_sha,'分类数量':dict(zip(类别,[freq[i] for i in range(6)])),
                 '训练记录':records,'独立测试':None,'性质':'仅供演示；需独立采集验证与测试'}
         report_path=out/(f'工作台训练_{stamp}_{time.time_ns()}.json')
         report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')

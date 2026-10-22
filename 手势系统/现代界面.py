@@ -29,7 +29,7 @@ from .预处理 import 获取识别矩形,裁剪手势
 from .手部候选框 import 搜索候选手框,候选框平滑器
 from .动作资源 import 素材路径,动作索引,动作列表
 from .界面数据 import 验证设置,安全保存设置
-from .工作台数据 import (样本汇总,场景明细,导入图片,回收本地场景,回收整个场景,验证轮次,验证快捷键,图片后缀)
+from .工作台数据 import (样本汇总,场景明细,导入图片,回收本地场景,回收整个场景,验证轮次,验证快捷键,图片后缀,推荐新场景名称)
 from .训练状态 import 训练记录状态
 from .训练日志编码 import 训练日志解码器, 配置训练子进程编码
 from .相机线程 import CameraWorker
@@ -258,12 +258,14 @@ class CaptureDialog(QDialog):
         self.resize(960,730);self.setMinimumSize(760,600)
         self.setStyleSheet(STYLES+'QDialog {background:#EEF4FD;}')
         self.cam=None;self.capture_worker=None;self.camera_ready=False
-        self.active=False;self.seq=[];self.index=0;self.saved=0;self.last_saved=0
+        self.active=False;self.preparing=False;self.seq=[];self.index=0;self.saved=0;self.last_saved=0
+        self.countdown_timer=QTimer(self);self.countdown_timer.setInterval(100)
+        self.countdown_timer.timeout.connect(self._countdown_tick);self.countdown_end=0.
         layout=QVBoxLayout(self);layout.setContentsMargins(22,18,22,18);layout.setSpacing(12)
         layout.addWidget(label('摄像头采集',title=True))
         controls=QGridLayout();controls.setHorizontalSpacing(12)
         self.pick=GlassComboBox();self.pick.addItems(['全部六类']+类别)
-        self.scene=QLineEdit('场景02');self.scene.setPlaceholderText('例如 场景02')
+        self.scene=QLineEdit(推荐新场景名称(数据目录));self.scene.setPlaceholderText('自动推荐下一个新场景，例如 场景05')
         self.scenes=QSpinBox();self.scenes.setRange(1,30);self.scenes.setValue(1)
         self.fps=QDoubleSpinBox();self.fps.setRange(.2,12);self.fps.setSingleStep(.5);self.fps.setValue(4);self.fps.setSuffix(' 张/秒')
         self.count=QSpinBox();self.count.setRange(1,10000);self.count.setValue(30)
@@ -277,13 +279,21 @@ class CaptureDialog(QDialog):
         self.preview.setMinimumHeight(330);self.preview.setStyleSheet('background:#13253B;color:white;border-radius:18px;')
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding)
         layout.addWidget(self.preview,1)
+        self.capture_prompt=label('准备采集：先将手伸入识别区域',title=True)
+        self.capture_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.capture_prompt.setMinimumHeight(76)
+        self.capture_prompt.setStyleSheet('QLabel {background:#233D64; color:white; border-radius:15px; font-size:21px; font-weight:700; padding:9px;}')
+        layout.addWidget(self.capture_prompt)
         self.info=label('开始后逐类拍摄；到达张数自动切换到下一个手势或场景。',dim=True)
         layout.addWidget(self.info)
         buttons=QHBoxLayout()
-        self.go=btn('▶ 开始采集',self.start,primary=True)
-        self.stop=btn('■ 停止并保留已拍照片',self.pause)
-        buttons.addWidget(self.go);buttons.addWidget(self.stop);buttons.addStretch()
-        buttons.addWidget(btn('完成并返回',self.accept))
+        self.go=btn('▶ 开始采集（3秒准备）',self.start,primary=True)
+        self.stop=btn('■ 暂停采集',self.pause)
+        self.done_btn=btn('✓ 完成采集 · 返回数据页',self.accept,primary=True)
+        self.done_btn.setStyleSheet('QPushButton {background:#148B68; color:white; border:0; border-radius:14px; min-height:48px; padding:0px 18px; font-weight:700;}')
+        self.done_btn.setVisible(False)
+        buttons.addWidget(self.go,2);buttons.addWidget(self.stop,1);buttons.addStretch()
+        buttons.addWidget(self.done_btn,2)
         layout.addLayout(buttons)
         self.shortcuts=[];self.hot_start.setText('S');self.hot_stop.setText('E')
         self.open_camera()
@@ -295,7 +305,9 @@ class CaptureDialog(QDialog):
         self.capture_worker.start()
     def _camera_state(self,ready,message):
         self.camera_ready=ready
-        if not ready:self.active=False;self.info.setText(message)
+        if not ready:
+            self.active=False;self._cancel_countdown();self.info.setText(message)
+            if self.index<len(self.seq) or not self.seq:self.go.setEnabled(True)
     def bind_shortcuts(self):
         for item in self.shortcuts:item.setEnabled(False);item.deleteLater()
         self.shortcuts=[]
@@ -306,7 +318,8 @@ class CaptureDialog(QDialog):
         return start,stop
     def start(self):
         if not self.camera_ready:QMessageBox.warning(self,'摄像头','没有可用的摄像头');return
-        if self.active:return
+        if self.seq and self.index>=len(self.seq):self.accept();return
+        if self.active or self.preparing:return
         if not self.seq:
             try:
                 start,stop=self.bind_shortcuts()
@@ -317,18 +330,50 @@ class CaptureDialog(QDialog):
                 if self.scenes.value()>1 and not m:raise ValueError('多个场景请使用带编号的名称，例如 场景02')
                 session_names=[(m.group(1)+str(int(m.group(2))+i).zfill(len(m.group(2))) if m else first) for i in range(self.scenes.value())]
                 for session in session_names:验证轮次(session)
-                self.seq=[(c,s) for s in session_names for c in classes]
+                proposed=[(c,s) for s in session_names for c in classes]
                 # Prevent accidental blending of independent sessions with previously collected ones.
-                occupied=[f'{c}/{s}' for c,s in self.seq if (数据目录/c/s).is_dir() and any((数据目录/c/s).iterdir())]
+                occupied=[f'{c}/{s}' for c,s in proposed if (数据目录/c/s).is_dir() and any((数据目录/c/s).iterdir())]
                 if occupied:
                     raise ValueError('目标采集目录已存在图片：'+', '.join(occupied[:4])+'。请更换场景名称，防止混入旧轮次。')
+                self.seq=proposed
                 for field in [self.pick,self.scene,self.scenes,self.fps,self.count,self.hot_start,self.hot_stop]:field.setEnabled(False)
                 self.info.setText(f'采集队列已建立，{len(self.seq)} 个手势/场景组合；{start} 开始 / {stop} 停止')
             except ValueError as e:QMessageBox.warning(self,'参数错误',str(e));return
-        self.active=True;self.last_saved=0;self.go.setText('正在采集…')
+        self._begin_countdown()
+
+    def _begin_countdown(self):
+        if not self.seq or self.index>=len(self.seq):return
+        gesture,session=self.seq[self.index]
+        self.preparing=True;self.active=False;self.countdown_end=time.monotonic()+3.0
+        self.capture_prompt.setText(f'请准备【{gesture}】  ·  {session}  ·  3 秒后采集')
+        self.info.setText(f'第 {self.index+1}/{len(self.seq)} 组：保持【{gesture}】在框内；倒计时期间不会保存图片')
+        self.go.setEnabled(False);self.go.setText('准备中：3…')
+        self.countdown_timer.start()
+
+    def _countdown_tick(self):
+        if not self.preparing:return
+        remaining=self.countdown_end-time.monotonic()
+        gesture,session=self.seq[self.index]
+        if remaining>0:
+            seconds=max(1,__import__('math').ceil(remaining))
+            self.capture_prompt.setText(f'请做【{gesture}】  ·  {session}  ·  {seconds} 秒后采集')
+            self.go.setText(f'准备中：{seconds}…')
+            return
+        self._cancel_countdown()
+        if not self.camera_ready:return
+        self.active=True;self.last_saved=0
+        self.go.setText('● 正在采集');self.go.setEnabled(False)
+        self.capture_prompt.setText(f'● 正在拍摄【{gesture}】  ·  {session}')
+
+    def _cancel_countdown(self):
+        self.preparing=False;self.countdown_timer.stop()
+
     def pause(self):
-        self.active=False;self.go.setText('▶ 继续采集')
-        self.info.setText(f'已停止。保留已拍照片。进度：{self.index+1}/{len(self.seq)}，当前 {self.saved}/{self.count.value()} 张。' if self.seq else '未启动采集')
+        self._cancel_countdown();self.active=False
+        if self.seq and self.index>=len(self.seq):return
+        self.go.setEnabled(True);self.go.setText('▶ 继续采集（3秒准备）')
+        self.capture_prompt.setText('已暂停 · 已拍照片均已保存')
+        self.info.setText(f'已暂停。进度：{self.index+1}/{len(self.seq)}，当前 {self.saved}/{self.count.value()} 张。' if self.seq else '尚未启动采集')
     def tick(self,image,payload):
         try:
             frame=payload.get('raw_frame')
@@ -347,17 +392,21 @@ class CaptureDialog(QDialog):
                     if self.saved>=self.count.value():
                         self.saved=0;self.index+=1;self.active=False
                         if self.index==len(self.seq):
-                            self.info.setText('✓ 全部采集结束，图片已保存。关闭窗口即可在数据页自动看到变化。')
-                            self.go.setEnabled(False)
+                            self.info.setText('✓ 六类/全部场景采集完成，图片已保存；点击绿色按钮返回数据页。')
+                            self.capture_prompt.setText('✓ 全部采集完成')
+                            self.go.setVisible(False);self.stop.setVisible(False)
+                            self.done_btn.setVisible(True);self.done_btn.setFocus()
                         else:
                             c,s=self.seq[self.index]
-                            self.info.setText(f'下一组：{c}/{s}。调整手势或环境后按开始键，再采集。')
-                            self.go.setText('▶ 开始下一组')
+                            self.capture_prompt.setText(f'下一组：请准备【{c}】 · {s}')
+                            self.info.setText(f'✓ 上一组完成！请先调整姿势为【{c}】，点击下一组后还有 3 秒准备时间。')
+                            self.go.setEnabled(True);self.go.setText('▶ 开始下一组（3秒准备）')
             q=QPixmap.fromImage(image)
             self.preview.setPixmap(q.scaled(self.preview.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
         finally:
             if self.capture_worker:self.capture_worker.acknowledge()
     def done(self,result):
+        self._cancel_countdown()
         if self.capture_worker and self.capture_worker.isRunning():
             self.capture_worker.requestInterruption()
             if not self.capture_worker.wait(2500):
@@ -626,9 +675,9 @@ class GestureWindow(QWidget):
         v=self._scroll_content(base)
         train=panel();v.addWidget(train)
         train.layout().addWidget(label('选择训练数据',title=True))
-        train.layout().addWidget(label('每次选择一个本地场景；默认混合仓库中的公开手势图片。专项训练会重放其余类别，避免遗忘。',dim=True))
+        train.layout().addWidget(label('默认累计使用所有本地场景及公开训练图片，并从上一版六分类权重继续训练；也可明确选用单个场景。',dim=True))
         row=QHBoxLayout();train.layout().addLayout(row)
-        self.train_scene=GlassComboBox();self.train_scene.setEditable(True);self.train_scene.setEditText('场景01')
+        self.train_scene=GlassComboBox();self.train_scene.setEditable(False);self.train_scene.addItem('全部场景（累计训练）')
         self.focus_cat=GlassComboBox();self.focus_cat.addItems(类别)
         row.addWidget(label('场景'));row.addWidget(self.train_scene,2)
         row.addWidget(label('专项动作'));row.addWidget(self.focus_cat,2)
@@ -677,12 +726,21 @@ class GestureWindow(QWidget):
         state=训练记录状态()
         session=self.train_scene.currentText().strip()
         batches={b['场景']:b['手势'] for b in 场景明细(数据目录)}
-        counts=batches.get(session,{})
+        is_all=(session=='全部场景（累计训练）')
+        counts=({c:sum(b.get(c,0) for b in batches.values()) for c in 类别}
+                if is_all else batches.get(session,{}))
+        trained=set(state.get('场景',[]))
         for i,c in enumerate(类别):
-            for j,val in enumerate((c,str(counts.get(c,0)),state['类别'][c])):
+            if is_all:
+                status=(state['类别'][c]+' · 模型记录场景 '+str(len(trained)))
+            elif state['状态']=='已记录':
+                status=('已参与当前模型训练' if session in trained and state['类别'][c]=='已训练'
+                        else '此场景未参与当前模型训练')
+            else:status=state['类别'][c]
+            for j,val in enumerate((c,str(counts.get(c,0)),status)):
                 self.train_classes.setItem(i,j,QTableWidgetItem(val))
         details=(' · 数据来源：'+','.join(state['场景'])) if state['场景'] else ''
-        self.train_record.setText('模型状态：'+state['状态']+details+'。已训练只表示样本参与训练，非识别准确率。')
+        self.train_record.setText('模型状态：'+state['状态']+details+'。当前表格中的样本数量与已训练来源分别核验。')
 
     def make_model(self):
         v=self.page('模型与类别信息 · 训练指标必须来自真实验证集或测试集')
@@ -784,6 +842,13 @@ class GestureWindow(QWidget):
             if (模型目录/'正式模型.pt').exists():self.infer=手势推理器()
         except (OSError,ValueError,RuntimeError) as e:self.model_error=str(e)
         if hasattr(self,'model_state'):self.refresh_model()
+        if getattr(self,'_pending_after_training',False):
+            self._pending_after_training=False
+            if self.infer:
+                from .训练状态 import 文件哈希
+                self.train_status.setText('✓ 新模型已热加载，无需重启 · SHA256 '+文件哈希(模型目录/'正式模型.pt')[:12])
+            else:
+                self.train_status.setText('× 训练已保存，但加载新模型失败：'+self.model_error)
         self.update_status()
 
     def update_status(self):
@@ -855,7 +920,7 @@ class GestureWindow(QWidget):
                 # Keep the camera/inference running during gesture pause so the same gesture can resume.
                 event=self.ctrl.处理(detected if detected!='无手' else None,now)
                 self.update_gesture(detected,result['置信度'])
-                self.camera_info.setText(f'FPS {self.last_fps:.1f} · 推理 {result["推理毫秒"]:.1f} ms · 阈值 {result["阈值"]:.2f}')
+                self.camera_info.setText(f'FPS {self.last_fps:.1f} · 推理 {result["推理毫秒"]:.1f} ms · 候选 {result["原始类别"]} {result["置信度"]:.1%} · 阈值 {result["阈值"]:.2f}' + ('（未达阈值，不执行）' if not detected else ''))
                 if event:
                     if event in ('已暂停','已恢复'):
                         self.run_btn.setText('Ⅱ 手势暂停中 · 点击结束' if event=='已暂停' else '■ 停止识别')
@@ -890,11 +955,14 @@ class GestureWindow(QWidget):
             for j,val in enumerate(vals):
                 self.batch_table.setItem(i,j,QTableWidgetItem(str(val)))
         self.batch_table.setUpdatesEnabled(True)
-        for combo,previous in ((self.data_session,existing_scene),(self.train_scene,existing_train)):
-            combo.blockSignals(True)
-            combo.clear();combo.addItems(names)
-            combo.setEditText(previous or (names[0] if names else '场景01'))
-            combo.blockSignals(False)
+        self.data_session.blockSignals(True)
+        self.data_session.clear();self.data_session.addItems(names)
+        self.data_session.setEditText(existing_scene if existing_scene in names else (names[0] if names else '场景01'))
+        self.data_session.blockSignals(False)
+        self.train_scene.blockSignals(True)
+        self.train_scene.clear();self.train_scene.addItems(['全部场景（累计训练）']+names)
+        self.train_scene.setCurrentText(existing_train if existing_train in names else '全部场景（累计训练）')
+        self.train_scene.blockSignals(False)
         self.data_category.setCurrentText(current_cat)
         paths=[str(数据目录)]
         for c in 类别:
@@ -988,28 +1056,35 @@ class GestureWindow(QWidget):
                 not getattr(self,'_train_log_testing',False))
     def start_training(self,mode):
         if self.proc and self.proc.state()!=QProcess.ProcessState.NotRunning:return
-        scene=self.train_scene.currentText().strip()
-        try:验证轮次(scene)
+        selection=self.train_scene.currentText().strip()
+        batches=场景明细(数据目录)
+        all_scenes=[entry['场景'] for entry in batches]
+        sessions=all_scenes if selection=='全部场景（累计训练）' else [selection]
+        if not sessions:
+            QMessageBox.warning(self,'没有训练场景','请先在「数据」页采集或导入手势图片。');return
+        try:
+            for scene in sessions:验证轮次(scene)
         except ValueError as e:QMessageBox.warning(self,'无效场景',str(e));return
-        batch=next((b for b in 场景明细(数据目录) if b['场景']==scene),None)
-        if not batch:
-            QMessageBox.warning(self,'没有场景图片','该场景没有本地照片，请先到「数据」页采集或导入。');return
+        chosen=[b for b in batches if b['场景'] in sessions]
+        if len(chosen)!=len(sessions):
+            QMessageBox.warning(self,'找不到场景','选定场景尚无本地样本');return
+        combined={c:sum(b['手势'].get(c,0) for b in chosen) for c in 类别}
         if mode=='all':
-            missing=[c for c in 类别 if batch['手势'].get(c,0)==0]
+            missing=[c for c in 类别 if combined[c]==0]
             if missing:
-                QMessageBox.warning(self,'缺少本地图片','当前场景的以下手势没有图片：'+', '.join(missing));return
+                QMessageBox.warning(self,'缺少本地图片','以下手势没有本地图片：'+', '.join(missing));return
         else:
             focus=self.focus_cat.currentText()
-            if batch['手势'].get(focus,0)==0:
-                QMessageBox.warning(self,'缺少专项图片',f'{scene} / {focus} 尚无私人照片，请先在数据页采集或导入。');return
+            if combined[focus]==0:
+                QMessageBox.warning(self,'缺少专项图片',f'{focus} 尚无私人照片');return
         if self.running:self.stop_recognition()
         if mode=='focus' and not (模型目录/'正式模型.pt').exists():
             QMessageBox.warning(self,'需要模型','请先训练全部六类，再对单个类别进行专项强化');return
         target=self.focus_cat.currentText()
-        msg=(f'使用场景 {scene} + 公开数据训练六分类 CNN。' if mode=='all' else f'专项强化 {target}，同时重放其他五类数据。')
+        msg=(f'使用 {len(sessions)} 个场景（{"、".join(sessions)}）及公开数据继续训练六分类 CNN。' if mode=='all' else f'专项强化 {target}；使用 {len(sessions)} 个场景并重放其余类别。')
         msg+='\n旧模型会备份。没有独立验证集，本次结果只供演示。\n确认开始？'
         if QMessageBox.question(self,'启动训练',msg)!=QMessageBox.StandardButton.Yes:return
-        args=['-X','utf8','-u','-m','手势系统.工作台训练','--mode',mode,'--sessions',scene,'--epochs',str(self.train_epoch.value()),
+        args=['-X','utf8','-u','-m','手势系统.工作台训练','--mode',mode,'--sessions',*sessions,'--epochs',str(self.train_epoch.value()),
               '--device','cuda' if self.train_device.currentIndex() else 'cpu']
         if mode=='focus':args+=['--target',target]
         self._launch_training_process(args,testing=False)
@@ -1058,6 +1133,8 @@ class GestureWindow(QWidget):
             return
         self.train_status.setText('✓ 训练完成' if code==0 else f'训练结束，退出码 {code}（请查看日志）')
         if code==0:
+            self._pending_after_training=True
+            self.train_status.setText('训练成功，正在替换运行中的模型…')
             self.reload_model();self.refresh_training_status()
     def stop_training(self):
         if not self.proc or self.proc.state()==QProcess.ProcessState.NotRunning:return

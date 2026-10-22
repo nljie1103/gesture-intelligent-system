@@ -121,6 +121,19 @@ def 训练样本索引(sessions:list[str],root:Path=数据目录,include_public:
     return sample
 
 
+def 推荐新场景名称(root:Path=数据目录,prefix:str='场景')->str:
+    """Find the next never-currently-used numbered capture scene across all six gestures."""
+    root=Path(root)
+    pattern=re.compile(r'^'+re.escape(prefix)+r'(\d+)$')
+    maximum=0;width=2
+    for item in 场景明细(root):
+        match=pattern.fullmatch(item['场景'])
+        if match:
+            maximum=max(maximum,int(match.group(1)))
+            width=max(width,len(match.group(1)))
+    return f'{prefix}{maximum+1:0{width}d}'
+
+
 def 验证快捷键(start:str,stop:str):
     valid=re.compile(r'^(?:[A-Z0-9]|F(?:[1-9]|1[0-2]))$')
     if not valid.fullmatch(start.upper()) or not valid.fullmatch(stop.upper()) or start.upper()==stop.upper():

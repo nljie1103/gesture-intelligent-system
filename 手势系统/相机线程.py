@@ -60,6 +60,8 @@ class CameraWorker(QThread):
                     if self.recognizing and self.infer is not None:
                         result=self.infer.预测(frame)
                         detected=result['有效类别']
+                    # Raw samples MUST be captured before any UI-only ROI/candidate overlays.
+                    raw=frame.copy() if self.capture_mode else None
                     x,y,x2,y2=获取识别矩形(frame,self.roi)
                     if self.capture_mode or self.recognizing:
                         cv2.rectangle(frame,(x,y),(x2,y2),(45,207,114) if self.capture_mode else (231,160,54),2)
@@ -69,7 +71,6 @@ class CameraWorker(QThread):
                             a,b,c,d=candidate
                             cv2.rectangle(frame,(a,b),(c,d),(55,67,239),3)
                     else:smoother.重置()
-                    raw=frame.copy() if self.capture_mode else None
                     rgb=cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
                     h,w=rgb.shape[:2]
                     qimg=QImage(rgb.data,w,h,rgb.strides[0],QImage.Format.Format_RGB888).copy()
