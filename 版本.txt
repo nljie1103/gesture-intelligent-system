@@ -1,1 +1,1 @@
-v2.3.2（修复 Windows MediaPipe 安装期间 cv2.pyd 文件占用，并修复设置页表单布局）
+v2.3.3（修复 Windows MediaPipe 安装器 time 作用域错误；禁用默认食指手势自动暂停，恢复手势暂停需用户主动开启）

@@ -998,6 +998,8 @@ class GestureWindow(QWidget):
             self.inputs[key]=w
         self.show_box=QCheckBox('显示红色候选手部位置框（非精确检测框）')
         card.layout().addWidget(self.show_box)
+        self.gesture_pause_box=QCheckBox('允许食指指向暂停/恢复手势指令（默认关闭，防止误识别触发）')
+        card.layout().addWidget(self.gesture_pause_box)
         row=QHBoxLayout();row.addStretch()
         row.addWidget(btn('恢复未保存值',self.load_settings))
         row.addWidget(btn('保存并应用',self.save_settings,primary=True))
@@ -1113,6 +1115,7 @@ class GestureWindow(QWidget):
     def load_settings(self):
         for k,w in self.inputs.items():w.setText('' if self.settings.get(k) is None else str(self.settings[k]))
         self.show_box.setChecked(bool(self.settings.get('显示候选手部框',True)))
+        self.gesture_pause_box.setChecked(bool(self.settings.get('允许食指手势暂停',False)))
     def save_settings(self):
         if self.training_active():
             QMessageBox.warning(self,'训练中','训练期间不能修改设置。');return
@@ -1120,14 +1123,15 @@ class GestureWindow(QWidget):
         data['显示候选手部框']=self.show_box.isChecked()
         try:clean=验证设置(data)
         except ValueError as e:QMessageBox.warning(self,'设置错误',str(e));return
-        old=dict(self.settings);new={**old,**clean,'版本':VERSION}
+        old=dict(self.settings);new={**old,**clean,'版本':VERSION,
+                '允许食指手势暂停':bool(self.gesture_pause_box.isChecked())}
         try:安全保存设置(配置文件,new)
         except OSError as e:QMessageBox.critical(self,'写入失败',str(e));return
         self.settings=new;self.stop_recognition()
         self.ctrl=手势控制器(int(new['稳定帧数']),int(new['解除锁定帧数']),float(new['触发冷却秒数']))
         self.reload_model()
         # Reopening in reload_model applies changed camera ID / interval in worker thread.
-        QMessageBox.information(self,'设置','已经保存并应用；识别处于暂停状态。')
+        QMessageBox.information(self,'设置','设置已保存并应用；当前识别已停止，请点击开始识别。')
     def update_gesture(self,category,conf=None):
         if category is None:category='未达阈值'
         icon_category=category if category in 动作索引 else '无手'
@@ -1246,13 +1250,18 @@ class GestureWindow(QWidget):
             if self.running and result is not None:
                 detected=result['有效类别']
                 # Keep the camera/inference running during gesture pause so the same gesture can resume.
-                event=self.ctrl.处理(detected if detected!='无手' else None,now)
+                # Finger pointing is a valid class, but it must not pause controls unless the user opted in.
+                candidate=detected if detected!='无手' else None
+                if candidate=='食指指向' and not self.settings.get('允许食指手势暂停',False):
+                    candidate=None
+                event=self.ctrl.处理(candidate,now)
                 self.update_gesture(detected if detected is not None else '未达阈值',result['置信度'])
                 self.camera_info.setText(f'FPS {self.last_fps:.1f} · 推理 {result["推理毫秒"]:.1f} ms · 候选 {result["原始类别"]} {result["置信度"]:.1%} · 阈值 {result["阈值"]:.2f}' + ('（未达阈值，不执行）' if not detected else ''))
                 if event:
                     if event in ('已暂停','已恢复'):
-                        self.run_btn.setText('Ⅱ 手势暂停中 · 点击结束' if event=='已暂停' else '■ 停止识别')
-                        self.last_event.setText(f'✓ {event} · 使用食指指向可切换')
+                        self.run_btn.setText('■ 结束识别（指令已暂停）' if event=='已暂停' else '■ 停止识别')
+                        self.last_event.setText(('指令已暂停，摄像头仍在识别；食指可恢复'
+                                                 if event=='已暂停' else '指令已恢复，摄像头持续识别'))
                     elif self.image_dialog is not None and self.image_dialog.operate(event):
                         self.last_event.setText(f'✓ 已执行 {event} · 图片窗口')
                     else:

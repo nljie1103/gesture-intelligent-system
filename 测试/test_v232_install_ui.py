@@ -67,4 +67,23 @@ class InstallationAndLayoutTests(unittest.TestCase):
         self.assertIn("Signal(bool)",source)
 
 
+    def test_windows_wait_branch_uses_module_time_without_shadowing(self):
+        """Regression for UnboundLocalError in wait_for_parent on Windows."""
+        import ctypes
+        import importlib
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        mod=importlib.import_module('手势系统.手部组件离线安装')
+        fake_kernel=SimpleNamespace(
+            OpenProcess=MagicMock(return_value=123),
+            WaitForSingleObject=MagicMock(return_value=0),
+            CloseHandle=MagicMock(),
+        )
+        with patch.object(mod,'os',SimpleNamespace(name='nt',getpid=lambda: 9999)), \
+             patch.object(ctypes,'windll',SimpleNamespace(kernel32=fake_kernel),create=True), \
+             patch.object(mod.time,'sleep') as sleep:
+            mod.wait_for_parent(4242,timeout_ms=3000)
+            sleep.assert_called_once_with(1.0)
+        fake_kernel.CloseHandle.assert_called_once_with(123)
+
 if __name__=='__main__':unittest.main()

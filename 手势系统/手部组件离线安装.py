@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import traceback
+from .版本 import VERSION
 
 
 def wait_for_parent(pid:int, timeout_ms=180000):
@@ -31,7 +32,6 @@ def wait_for_parent(pid:int, timeout_ms=180000):
                 if status!=0:raise TimeoutError('主程序关闭超时或进程等待失败：'+str(status))
             finally:kernel.CloseHandle(handle)
     else:
-        import time
         for _ in range(int(timeout_ms/1000)):
             try:os.kill(pid,0)
             except ProcessLookupError:break
@@ -84,7 +84,7 @@ def main():
         print(message,flush=True)
         with logfile.open('a',encoding='utf-8') as out:out.write(message+'\n')
     result=0
-    log('Gesture Studio 手部组件独立安装 · v2.3.2')
+    log('Gesture Studio 手部组件独立安装 · v'+VERSION)
     try:
         log('等待主程序完全关闭，以解除 cv2.pyd 文件占用…')
         wait_for_parent(args.parent_pid)

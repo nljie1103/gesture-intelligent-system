@@ -80,6 +80,6 @@ class HandCropTests(unittest.TestCase):
         self.assertIn("gesture=='无手' and hand_box is not None",ui)
         self.assertIn("gesture!='无手' and hand_box is None",ui)
     def test_version(self):
-        self.assertEqual(VERSION,'2.3.2')
+        self.assertEqual(VERSION,'2.3.3')
 
 if __name__=='__main__':unittest.main()
