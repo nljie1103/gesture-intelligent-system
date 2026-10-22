@@ -7,6 +7,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -258,14 +259,14 @@ class HandSetupWorker(QThread):
     message=Signal(str)
     stage=Signal(str)
     progress=Signal(int,int)
-    succeeded=Signal()
+    succeeded=Signal(bool)
     failed=Signal(str)
     def run(self):
         try:
             from .手部组件安装 import 安装
-            安装(on_progress=self.message.emit,on_stage=self.stage.emit,
-                 on_bytes=lambda done,total:self.progress.emit(done,total))
-            self.succeeded.emit()
+            needs_restart=安装(on_progress=self.message.emit,on_stage=self.stage.emit,
+                  on_bytes=lambda done,total:self.progress.emit(done,total))
+            self.succeeded.emit(bool(needs_restart))
         except Exception as exc:self.failed.emit(str(exc))
 
 
@@ -970,40 +971,76 @@ class GestureWindow(QWidget):
             grid.addWidget(b,i//5,i%5)
         v.addWidget(label('备注：第七种新手势不能仅靠复制图片激活，需要扩展模型输出和重新训练。',dim=True))
     def make_settings(self):
-        v=self.page('摄像头及分类设置 · 保存在原有 设置.json，不覆盖私人数据')
-        card=panel();v.addWidget(card,1)
-        grid=QGridLayout();grid.setVerticalSpacing(17);grid.setHorizontalSpacing(22)
-        card.layout().addWidget(label('识别设置',title=True));card.layout().addLayout(grid)
+        base=self.page('摄像头及分类设置 · 保存在原有 设置.json，不覆盖私人数据')
+        v=self._scroll_content(base)
+        card=panel();v.addWidget(card)
+        card.layout().addWidget(label('识别设置',title=True))
+        grid=QGridLayout();grid.setVerticalSpacing(14);grid.setHorizontalSpacing(22)
+        card.layout().addLayout(grid)
         fields=[('摄像头编号','摄像头编号','0'),('识别区域比例','识别区域占画面短边比例','0.78'),
                 ('最小置信度（留空采用模型阈值）','最小置信度',''),('稳定帧数','稳定帧数','4'),
                 ('解锁帧数','解除锁定帧数','4'),('冷却时间（秒）','触发冷却秒数','1.0'),
                 ('刷新间隔（毫秒）','视频刷新毫秒','30')]
         self.inputs={}
+        # Each field is a single vertical unit, not two separate grid rows. This
+        # prevents QLabel rows from being squeezed into QLineEdit rows on Windows.
         for i,(text,key,placeholder) in enumerate(fields):
-            lbl=label(text,dim=True);w=QLineEdit();w.setPlaceholderText(placeholder)
-            grid.addWidget(lbl,i//2*2,i%2);grid.addWidget(w,i//2*2+1,i%2)
+            cell=QWidget();col=QVBoxLayout(cell)
+            col.setContentsMargins(0,0,0,0);col.setSpacing(7)
+            caption=label(text,dim=True);caption.setWordWrap(False)
+            caption.setMinimumHeight(21)
+            w=QLineEdit();w.setPlaceholderText(placeholder)
+            w.setMinimumHeight(45)
+            w.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+            col.addWidget(caption);col.addWidget(w)
+            cell.setMinimumHeight(79)
+            grid.addWidget(cell,i//2,i%2)
             self.inputs[key]=w
         self.show_box=QCheckBox('显示红色候选手部位置框（非精确检测框）')
         card.layout().addWidget(self.show_box)
-        card.layout().addWidget(label('手部精确定位组件（可选；不随软件自动下载）',title=True))
-        self.hand_setup_status=label('已检测到模型资源' if 包含定位资源() else '未安装：旧版固定 ROI 识别仍可正常使用',dim=True)
-        card.layout().addWidget(self.hand_setup_status)
-        self.hand_setup_btn=btn('安装手部定位组件（约 8 MB 模型 + Python 依赖）',self.install_hand_component)
-        card.layout().addWidget(self.hand_setup_btn)
-        self.hand_setup_progress=QProgressBar();self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(0)
-        card.layout().addWidget(self.hand_setup_progress)
-        self.hand_setup_log=QTextEdit();self.hand_setup_log.setReadOnly(True);self.hand_setup_log.setMinimumHeight(94)
-        card.layout().addWidget(self.hand_setup_log)
-        self.hand_setup_worker=None
-        row=QHBoxLayout();row.addStretch();row.addWidget(btn('恢复未保存值',self.load_settings));row.addWidget(btn('保存并应用',self.save_settings,primary=True))
+        row=QHBoxLayout();row.addStretch()
+        row.addWidget(btn('恢复未保存值',self.load_settings))
+        row.addWidget(btn('保存并应用',self.save_settings,primary=True))
         card.layout().addLayout(row)
-        card.layout().addStretch()
+
+        component=panel();v.addWidget(component)
+        component.layout().addWidget(label('手部精确定位组件（可选；不随软件自动下载）',title=True))
+        from .手部组件安装 import _dependencies_available
+        ready=包含定位资源() and _dependencies_available()
+        self.hand_setup_status=label('✓ 已安装手部定位组件' if ready else '未安装完整组件：普通固定区域识别仍可正常使用',dim=True)
+        component.layout().addWidget(self.hand_setup_status)
+        self.hand_setup_btn=btn('下载并安装手部定位组件',self.install_hand_component)
+        component.layout().addWidget(self.hand_setup_btn)
+        self.hand_setup_progress=QProgressBar();self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(0)
+        component.layout().addWidget(self.hand_setup_progress)
+        self.hand_setup_log=QTextEdit();self.hand_setup_log.setReadOnly(True)
+        self.hand_setup_log.setMinimumHeight(140)
+        component.layout().addWidget(self.hand_setup_log)
+        state_file=根目录/'.发布'/'手部组件安装状态.json'
+        if state_file.is_file():
+            try:
+                status=json.loads(state_file.read_text(encoding='utf-8'))
+                if not status.get('成功'):
+                    self.hand_setup_status.setText('上次独立安装失败；可重新点击安装，详细日志位于 .发布 目录')
+                self.hand_setup_log.append('上次安装：'+('成功' if status.get('成功') else '失败')+' · '+status.get('时间',''))
+                self.hand_setup_log.append('日志文件：'+status.get('日志路径',''))
+            except (OSError, ValueError, TypeError):pass
+        self.hand_setup_worker=None
+        self._hand_setup_requires_restart=False
+        v.addStretch()
         self.load_settings()
+
     def install_hand_component(self):
         if self.hand_setup_worker and self.hand_setup_worker.isRunning():return
-        if QMessageBox.question(self,'安装手部定位',
-            '这会通过 pip 安装 MediaPipe，并从 Google 官方下载约 8 MB 模型，完成前不会关闭窗口。继续？')!=QMessageBox.StandardButton.Yes:return
+        if self.training_active():
+            QMessageBox.warning(self,'训练进行中','请先完成训练，再安装手部组件。');return
+        if self.public_worker and self.public_worker.isRunning():
+            QMessageBox.warning(self,'下载进行中','请先完成或取消公开数据下载。');return
+        if QMessageBox.question(self,'安装手部定位组件',
+            '将先在软件内下载并缓存依赖与手部模型。若需更新 OpenCV，下载完成后软件会自动关闭，'
+            '独立安装窗口执行安装并自动重新启动。过程中不需要输入 YES。继续？')!=QMessageBox.StandardButton.Yes:return
         worker=HandSetupWorker(self);self.hand_setup_worker=worker
+        self._hand_setup_requires_restart=False
         self.hand_setup_btn.setEnabled(False)
         self.hand_setup_progress.setRange(0,0)
         self.hand_setup_log.clear()
@@ -1032,21 +1069,46 @@ class GestureWindow(QWidget):
         else:self.hand_setup_progress.setRange(0,0)
         self.hand_setup_status.setText(f'下载手部模型：{done/1048576:.1f} MB'+(f' / {total/1048576:.1f} MB' if total else ''))
 
-    def _hand_setup_success(self):
+    def _hand_setup_success(self,needs_restart=False):
+        self._hand_setup_requires_restart=bool(needs_restart)
         self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(100)
-        self.hand_setup_status.setText('✓ 手部组件安装完成；新输入策略需要从零重训')
-        self.hand_setup_log.append('✓ 已安装')
+        if needs_restart:
+            self.hand_setup_status.setText('依赖缓存完成；即将关闭软件并在独立窗口安装')
+            self.hand_setup_log.append('缓存完成。主程序退出后才会替换被占用的 cv2.pyd。')
+        else:
+            self.hand_setup_status.setText('✓ 手部组件安装完成；手部输入策略需要重新训练模型')
+            self.hand_setup_log.append('✓ 已安装')
 
     def _hand_setup_failed(self,message):
+        self._hand_setup_requires_restart=False
         self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(0)
-        self.hand_setup_status.setText('安装失败：请查看下方日志')
-        self.hand_setup_log.append('× 安装失败：'+message)
-        QMessageBox.warning(self,'手部组件安装失败',message[-2000:])
+        self.hand_setup_status.setText('安装准备失败：请查看下方日志')
+        self.hand_setup_log.append('× 失败：'+message)
+        QMessageBox.warning(self,'手部组件准备失败',message[-2000:])
 
     def _hand_setup_finished(self,worker):
         if self.hand_setup_worker is worker:self.hand_setup_worker=None
         self.hand_setup_btn.setEnabled(True)
         worker.deleteLater()
+        if self._hand_setup_requires_restart:
+            self._hand_setup_requires_restart=False
+            QTimer.singleShot(0,self._launch_hand_setup_after_exit)
+
+    def _launch_hand_setup_after_exit(self):
+        from .手部组件安装 import WHEEL_DIR
+        if self.training_active() or (self.public_worker and self.public_worker.isRunning()):
+            self.hand_setup_status.setText('其他任务正在运行，请完成后重新点击安装。')
+            return
+        command=[sys.executable,'-X','utf8','-m','手势系统.手部组件离线安装',
+                 '--parent-pid',str(os.getpid()),'--wheel-dir',str(WHEEL_DIR),'--root',str(根目录)]
+        try:
+            subprocess.Popen(command,cwd=str(根目录),stdin=subprocess.DEVNULL,
+                creationflags=getattr(subprocess,'CREATE_NEW_CONSOLE',0))
+        except OSError as exc:
+            QMessageBox.warning(self,'无法启动独立安装进程',str(exc));return
+        # closeEvent waits for the camera thread to relinquish cv2.pyd.
+        self.hand_setup_status.setText('已启动独立安装进程，正在关闭主程序…')
+        self.close()
 
     def load_settings(self):
         for k,w in self.inputs.items():w.setText('' if self.settings.get(k) is None else str(self.settings[k]))

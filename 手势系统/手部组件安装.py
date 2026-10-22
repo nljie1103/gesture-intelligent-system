@@ -1,87 +1,115 @@
-"""可选手部组件：只在用户明确触发时联网。流式显示 pip 阶段、模型下载字节与错误。"""
+"""手部组件分阶段安装：运行中的 GUI 只下载，不修改它已加载的 OpenCV DLL。
+
+点击安装由 GUI 工作线程下载所有轮子和模型；主窗口退出后，独立进程进行 pip 安装。
+"""
 from __future__ import annotations
 import os
 import queue
-import threading
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import zipfile
 from collections import deque
-from .手部定位 import 定位资源,包含定位资源
+from pathlib import Path
+from .配置 import 根目录
+from .手部定位 import 定位资源, 包含定位资源
 
-MODEL_URL='https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
-MAX_SIZE=16*1024*1024
+MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+MAX_SIZE = 16 * 1024 * 1024
+WHEEL_DIR = 根目录 / '.发布' / '手部组件依赖缓存-v2.3.2'
+MEDIA_PIPE_REQUIREMENT = 'mediapipe>=1.1.1,<1.2'
+OPENCV_REQUIREMENT = 'opencv-contrib-python>=4.11,<5.0'
+FALLBACK_CV_REQUIREMENT = 'opencv-python>=4.10,<5.0'
 
-def 安装(on_progress=None,on_bytes=None,on_stage=None):
-    def log(s):
-        if on_progress:on_progress(s)
-    def stage(s):
-        if on_stage:on_stage(s)
+
+def _dependencies_available():
     try:
         import mediapipe as mp
-        from mediapipe.tasks import python as _mp_tasks
-        log('检测到 MediaPipe '+str(mp.__version__)+'，无需重新安装依赖')
-    except (ImportError,AttributeError):
-        stage('pip 安装依赖（下载量未知，显示运行状态）')
-        cmd=[sys.executable,'-m','pip','install','--only-binary=:all:','mediapipe>=1.1.1,<1.2']
-        log('正在安装 MediaPipe：使用项目虚拟环境中的 Python '+sys.executable)
-        process=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
-                                 text=True,encoding='utf-8',errors='replace',bufsize=1)
-        last=deque(maxlen=35)
-        q=queue.Queue()
-        def collect():
-            try:
-                for line in process.stdout:q.put(line)
-            finally:q.put(None)
-        reader=threading.Thread(target=collect,daemon=True)
-        reader.start()
-        start=time.monotonic();done=False
+        from mediapipe.tasks import python as _tasks
+        return bool(mp.__version__)
+    except Exception:
+        # A previous interrupted pip install can raise more than ImportError.
+        return False
+
+
+def _run_download(command, log, timeout=720):
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1,
+        env={**os.environ, 'PYTHONUTF8':'1', 'PYTHONUNBUFFERED':'1'})
+    q = queue.Queue()
+    def pump():
         try:
-            while not done:
-                if time.monotonic()-start>360:
-                    raise TimeoutError('pip 安装超过 6 分钟（含网络等待）；请检查网络或依赖日志')
-                try:line=q.get(timeout=.5)
-                except queue.Empty:continue
-                if line is None:done=True;continue
-                line=line.strip()
-                if line:
-                    last.append(line)
-                    log(line[:260])
-            status=process.wait(timeout=15)
-            if status!=0:raise RuntimeError('pip 返回码 '+str(status)+'：\n'+'\n'.join(last)[-2000:])
-        finally:
-            if process.poll() is None:process.kill();process.wait()
-        try:
-            import mediapipe as mp
-            from mediapipe.tasks import python as _mp_tasks
-        except Exception as exc:raise RuntimeError('pip 已结束，但 MediaPipe Tasks 仍无法导入：'+str(exc)) from exc
-        log('MediaPipe 已安装：'+str(mp.__version__))
-    if 包含定位资源():
-        stage('已安装')
-        log('手部定位资源已存在，无须重复下载')
-        return
-    stage('下载手部定位模型')
-    log('从 Google 官方存储下载手部定位模型…')
-    定位资源.parent.mkdir(parents=True,exist_ok=True)
-    tmp=定位资源.with_suffix('.download')
+            for line in proc.stdout: q.put(line)
+        finally: q.put(None)
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    start = time.monotonic()
+    tail = deque(maxlen=24)
     try:
-        size=0
-        with urllib.request.urlopen(urllib.request.Request(MODEL_URL,headers={'User-Agent':'GestureStudio/2.3.1'}),timeout=45) as response,tmp.open('wb') as f:
-            try:total=int(response.headers.get('Content-Length','0'))
-            except ValueError:total=0
-            if total>MAX_SIZE:raise ValueError('模型文件大于允许大小')
-            while True:
-                chunk=response.read(256*1024)
-                if not chunk:break
-                size+=len(chunk)
-                if size>MAX_SIZE:raise ValueError('手部定位模型下载超过预期上限')
-                f.write(chunk)
-                if on_bytes:on_bytes(size,total)
-        stage('正在核验手部定位模型')
-        if size<1_000_000 or not zipfile.is_zipfile(tmp):raise ValueError('下载内容不是有效的手部定位 .task 模型')
-        os.replace(tmp,定位资源)
+        while True:
+            if time.monotonic() - start > timeout:
+                raise TimeoutError('下载安装包超过 12 分钟，请检查网络或代理')
+            try: line=q.get(timeout=.5)
+            except queue.Empty: continue
+            if line is None: break
+            line = line.strip()
+            if line:
+                tail.append(line)
+                log(line[:300])
+        rc=proc.wait(timeout=30)
+        if rc:
+            raise RuntimeError('pip 下载失败（退出码 '+str(rc)+'）：\n'+'\n'.join(tail)[-1800:])
+    finally:
+        if proc.poll() is None:
+            proc.kill();proc.wait()
+
+
+def 安装(on_progress=None, on_bytes=None, on_stage=None):
+    """准备离线安装包；返回 True 表示必须在关闭软件后安装 Python 依赖。"""
+    log = on_progress or (lambda message: None)
+    stage = on_stage or (lambda message: None)
+    need_pip = not _dependencies_available()
+    if need_pip:
+        WHEEL_DIR.mkdir(parents=True, exist_ok=True)
+        stage('下载并缓存 Python 依赖（安装将在软件退出后进行）')
+        log('只下载，不修改运行中的 OpenCV 文件。下载大小由 pip 实时日志显示。')
+        # Keep version 4.x: Gesture Studio is tested with OpenCV >=4.10,<5.
+        _run_download([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:',
+            '--dest', str(WHEEL_DIR), MEDIA_PIPE_REQUIREMENT, OPENCV_REQUIREMENT], log)
+        # Also cache a working original OpenCV for failure recovery.
+        stage('缓存 OpenCV 恢复包')
+        _run_download([sys.executable, '-m', 'pip', 'download', '--no-deps',
+            '--only-binary=:all:', '--dest', str(WHEEL_DIR), FALLBACK_CV_REQUIREMENT], log)
+        log('Python 依赖已下载。安装会在本软件完全关闭后自动执行。')
+    else:
+        log('MediaPipe Python 依赖已安装，检查模型文件…')
+    if not 包含定位资源():
+        stage('下载手部关键点定位模型')
+        定位资源.parent.mkdir(parents=True, exist_ok=True)
+        temporary=定位资源.with_suffix('.download')
+        try:
+            total_bytes=0
+            request=urllib.request.Request(MODEL_URL, headers={'User-Agent':'GestureStudio/2.3.2'})
+            with urllib.request.urlopen(request, timeout=45) as resp, temporary.open('wb') as f:
+                try: total=int(resp.headers.get('Content-Length','0'))
+                except ValueError: total=0
+                if total > MAX_SIZE: raise ValueError('模型文件大于允许大小')
+                while True:
+                    part=resp.read(256*1024)
+                    if not part: break
+                    total_bytes+=len(part)
+                    if total_bytes>MAX_SIZE: raise ValueError('模型超过预期上限')
+                    f.write(part)
+                    if on_bytes: on_bytes(total_bytes,total)
+            if total_bytes<1_000_000 or not zipfile.is_zipfile(temporary):
+                raise ValueError('下载内容不是有效的 Hand Landmarker .task 模型')
+            os.replace(temporary, 定位资源)
+        finally:
+            temporary.unlink(missing_ok=True)
+    if need_pip:
+        stage('下载完成 · 退出后安装 Python 组件')
+    else:
         stage('已安装')
-        log('手部定位组件已安装；启用手部裁剪需使用对应模式重新训练')
-    finally:tmp.unlink(missing_ok=True)
+    return need_pip
