@@ -35,6 +35,7 @@ from .训练日志编码 import 训练日志解码器, 配置训练子进程编�
 from .相机线程 import CameraWorker
 from .公开资源线程 import PublicImportWorker
 from .公开数据 import 导入公开子集
+from .公开数据管理 import 公开数据状态, 回收公开数据
 from .手部定位 import 包含定位资源,读取训练输入策略,策略标识
 from .图片交互 import ImageControlDialog
 
@@ -255,12 +256,15 @@ class Titlebar(QFrame):
 
 class HandSetupWorker(QThread):
     message=Signal(str)
+    stage=Signal(str)
+    progress=Signal(int,int)
     succeeded=Signal()
     failed=Signal(str)
     def run(self):
         try:
             from .手部组件安装 import 安装
-            安装(on_progress=self.message.emit)
+            安装(on_progress=self.message.emit,on_stage=self.stage.emit,
+                 on_bytes=lambda done,total:self.progress.emit(done,total))
             self.succeeded.emit()
         except Exception as exc:self.failed.emit(str(exc))
 
@@ -726,58 +730,137 @@ class GestureWindow(QWidget):
         line=QHBoxLayout();public.layout().addLayout(line)
         self.public_download_btn=btn('下载并导入公开数据',self.download_public)
         line.addWidget(self.public_download_btn)
-        line.addWidget(btn('从本地 ZIP 导入',self.import_public_zip))
+        self.public_import_btn=btn('从本地 ZIP 导入',self.import_public_zip)
+        line.addWidget(self.public_import_btn)
+        self.public_delete_btn=btn('删除公开数据',self.delete_public,danger=True)
+        line.addWidget(self.public_delete_btn)
         self.public_cancel_btn=btn('取消下载',self.cancel_public);self.public_cancel_btn.setEnabled(False)
         line.addWidget(self.public_cancel_btn);line.addStretch()
-        self.public_status=label('未开始公开数据下载；训练时是否使用公开数据由训练页勾选决定。',dim=True)
+        self.public_progress=QProgressBar();self.public_progress.setRange(0,100);self.public_progress.setValue(0)
+        public.layout().addWidget(self.public_progress)
+        self.public_status=label('正在检查公开数据安装状态…',dim=True)
         public.layout().addWidget(self.public_status)
         self.public_worker=None
+        self.refresh_public_state()
         v.addStretch()
+
+    def refresh_public_state(self):
+        if not hasattr(self,'public_download_btn'):return
+        state=公开数据状态(数据目录)
+        busy=bool(self.public_worker and self.public_worker.isRunning())
+        installed=state['状态']=='已安装'
+        incomplete=state['状态']=='残留或不完整'
+        self.public_download_btn.setVisible(not installed)
+        self.public_download_btn.setText('清理残留并重新下载' if incomplete else '下载并导入公开数据')
+        self.public_import_btn.setVisible(not installed)
+        self.public_delete_btn.setVisible(installed or incomplete)
+        self.public_delete_btn.setText('清理残留' if incomplete else '删除公开数据')
+        self.public_delete_btn.setEnabled(not busy and not self.training_active())
+        self.public_download_btn.setEnabled(not busy)
+        self.public_import_btn.setEnabled(not busy)
+        if not busy:
+            if installed:
+                self.public_status.setText(f'✓ 已安装公开数据：{state["合计"]} 张；可手动删除或在训练页选择是否参与。')
+                self.public_progress.setRange(0,100);self.public_progress.setValue(100)
+            elif incomplete:
+                self.public_status.setText('检测到旧版残留或不完整数据：'+','.join(state['原因'])+'。可点击清理残留并重新下载，旧文件先移入本地回收站。')
+                self.public_progress.setRange(0,100);self.public_progress.setValue(0)
+            else:
+                self.public_status.setText('未安装公开数据；仅点击下载后才会联网。')
+                self.public_progress.setRange(0,100);self.public_progress.setValue(0)
+
+    def delete_public(self):
+        if self.training_active():
+            QMessageBox.warning(self,'训练进行中','训练期间不能删除公开数据。');return
+        if self.public_worker and self.public_worker.isRunning():return
+        state=公开数据状态(数据目录)
+        if state['状态']=='未安装':self.refresh_public_state();return
+        if QMessageBox.question(self,'删除公开数据',
+            f'将本地公开训练数据（{state["合计"]} 张）和来源清单移入本地回收站？\n'
+            '不会删除私人采集图片、模型或旧模型权重。')!=QMessageBox.StandardButton.Yes:return
+        try:
+            dest=回收公开数据(数据目录)
+        except (OSError,ValueError) as err:
+            QMessageBox.warning(self,'删除失败',str(err));return
+        self.refresh_data(force=True)
+        self.refresh_public_state()
+        QMessageBox.information(self,'公开数据已移入回收站','备份目录：'+str(dest))
+
+    def _public_progress(self,done,total):
+        self.public_status.setText(f'公开数据已下载 {done/1048576:.1f} MB'+(f' / {total/1048576:.1f} MB' if total>0 else '；总大小未知'))
+        if total>0:
+            self.public_progress.setRange(0,100)
+            self.public_progress.setValue(min(100,round(done*100/total)))
+        else:self.public_progress.setRange(0,0)
+
+    def _public_phase(self,message):
+        self.public_status.setText(message)
+        self.public_progress.setRange(0,0)
 
     def download_public(self):
         if self.training_active():
             QMessageBox.warning(self,'训练进行中','请先完成训练再导入公开数据。');return
-        if (数据目录/'公开训练').exists() or (数据目录/'公开数据清单.json').exists():
-            QMessageBox.information(self,'公开数据已存在','已经有公开数据，无需重复下载。可在训练页自行决定是否参与。');return
-        answer=QMessageBox.question(self,'手动下载公开数据','这将从 Hugging Face 下载约 402 MB 的 HaGRID 数据 ZIP；仅在确认后联网。继续？')
-        if answer!=QMessageBox.StandardButton.Yes:return
-        worker=PublicImportWorker(self);self.public_worker=worker
-        self.public_download_btn.setEnabled(False);self.public_cancel_btn.setEnabled(True)
-        self.public_status.setText('正在下载公开数据… 0 MB')
-        worker.progress.connect(lambda n:self.public_status.setText(f'已下载 {n/1048576:.1f} MB / 约 402 MB'))
+        if self.public_worker and self.public_worker.isRunning():return
+        state=公开数据状态(数据目录)
+        if state['状态']=='已安装':self.refresh_public_state();return
+        if state['状态']=='残留或不完整':
+            if QMessageBox.question(self,'修复公开数据残留',
+                '发现旧版公开数据残留或目录不完整。是否先移动至本地回收站，再重新下载？'
+                '该操作只处理公开训练目录和来源清单。')!=QMessageBox.StandardButton.Yes:return
+            try:回收公开数据(数据目录)
+            except (OSError,ValueError) as err:
+                QMessageBox.warning(self,'清理残留失败',str(err));return
+        if QMessageBox.question(self,'手动下载公开数据',
+            '这将从 Hugging Face 下载约 402 MB 的 HaGRID 数据 ZIP，校验后导入五类图片。继续？')!=QMessageBox.StandardButton.Yes:
+            self.refresh_public_state();return
+        self._start_public_worker(PublicImportWorker(self))
+
+    def _start_public_worker(self,worker):
+        self.public_worker=worker
+        self.public_download_btn.setEnabled(False)
+        self.public_import_btn.setEnabled(False)
+        self.public_delete_btn.setEnabled(False)
+        self.public_cancel_btn.setEnabled(True)
+        self.public_progress.setRange(0,0)
+        self.public_status.setText('正在准备公开数据导入…')
+        worker.progress.connect(self._public_progress)
+        worker.phase.connect(self._public_phase)
         worker.success.connect(self._public_success)
         worker.failed.connect(self._public_failed)
         worker.finished.connect(self._public_finished)
         worker.start()
+
     def _public_success(self,stats):
-        self.public_status.setText('✓ 公开数据已通过校验并导入；默认仍不参与训练。')
         self.refresh_data(force=True)
-        QMessageBox.information(self,'导入完成',str(stats.get('各类数量',{})))
+        self.public_status.setText('✓ 公开数据导入完成：'+str(stats.get('各类数量',{})))
+        QMessageBox.information(self,'导入完成','成功导入：'+str(stats.get('各类数量',{})))
+
     def _public_failed(self,message):
         self.public_status.setText('导入中止：'+message[:170])
-        QMessageBox.warning(self,'公开数据导入未完成',message[:550])
+        QMessageBox.warning(self,'公开数据导入未完成',message[:750])
+
     def _public_finished(self):
-        self.public_download_btn.setEnabled(True);self.public_cancel_btn.setEnabled(False)
-        worker=self.public_worker
-        self.public_worker=None
+        self.public_cancel_btn.setEnabled(False)
+        worker=self.public_worker;self.public_worker=None
         if worker:worker.deleteLater()
+        self.refresh_public_state()
+
     def cancel_public(self):
-        if self.public_worker:self.public_worker.request_cancel();self.public_status.setText('正在取消下载…')
+        if self.public_worker:
+            self.public_worker.request_cancel()
+            self.public_status.setText('正在取消下载…')
+            self.public_cancel_btn.setEnabled(False)
+
     def import_public_zip(self):
         if self.training_active():
             QMessageBox.warning(self,'训练进行中','请先完成训练再导入。');return
         if self.public_worker and self.public_worker.isRunning():return
+        state=公开数据状态(数据目录)
+        if state['状态']!='未安装':
+            QMessageBox.warning(self,'公开数据待清理','请先点击清理残留，或删除已有公开数据。');return
         path,_=QFileDialog.getOpenFileName(self,'选择 HaGRID 公开压缩包',str(Path.home()),'ZIP 文件 (*.zip)')
         if not path:return
-        if (数据目录/'公开训练').exists() or (数据目录/'公开数据清单.json').exists():
-            QMessageBox.warning(self,'公开数据已存在','为避免覆盖已有公开数据，不允许重复导入。');return
-        worker=PublicImportWorker(self,local_zip=Path(path));self.public_worker=worker
-        self.public_download_btn.setEnabled(False);self.public_cancel_btn.setEnabled(False)
-        self.public_status.setText('正在后台检查并导入本地 ZIP…')
-        worker.success.connect(self._public_success)
-        worker.failed.connect(self._public_failed)
-        worker.finished.connect(self._public_finished)
-        worker.start()
+        self._start_public_worker(PublicImportWorker(self,local_zip=Path(path)))
 
     def _choose_batch_cell(self,row,column):
         if row<0 or row>=self.batch_table.rowCount():return
@@ -905,7 +988,12 @@ class GestureWindow(QWidget):
         card.layout().addWidget(label('手部精确定位组件（可选；不随软件自动下载）',title=True))
         self.hand_setup_status=label('已检测到模型资源' if 包含定位资源() else '未安装：旧版固定 ROI 识别仍可正常使用',dim=True)
         card.layout().addWidget(self.hand_setup_status)
-        card.layout().addWidget(btn('安装手部定位组件（约 8 MB 模型 + Python 依赖）',self.install_hand_component))
+        self.hand_setup_btn=btn('安装手部定位组件（约 8 MB 模型 + Python 依赖）',self.install_hand_component)
+        card.layout().addWidget(self.hand_setup_btn)
+        self.hand_setup_progress=QProgressBar();self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(0)
+        card.layout().addWidget(self.hand_setup_progress)
+        self.hand_setup_log=QTextEdit();self.hand_setup_log.setReadOnly(True);self.hand_setup_log.setMinimumHeight(94)
+        card.layout().addWidget(self.hand_setup_log)
         self.hand_setup_worker=None
         row=QHBoxLayout();row.addStretch();row.addWidget(btn('恢复未保存值',self.load_settings));row.addWidget(btn('保存并应用',self.save_settings,primary=True))
         card.layout().addLayout(row)
@@ -913,16 +1001,53 @@ class GestureWindow(QWidget):
         self.load_settings()
     def install_hand_component(self):
         if self.hand_setup_worker and self.hand_setup_worker.isRunning():return
-        if QMessageBox.question(self,'安装手部定位','此操作将通过 pip 安装 MediaPipe，并从 Google 官方下载约 8 MB 手部关键点模型。不会下载 HaGRID 数据。继续？')!=QMessageBox.StandardButton.Yes:return
+        if QMessageBox.question(self,'安装手部定位',
+            '这会通过 pip 安装 MediaPipe，并从 Google 官方下载约 8 MB 模型，完成前不会关闭窗口。继续？')!=QMessageBox.StandardButton.Yes:return
         worker=HandSetupWorker(self);self.hand_setup_worker=worker
-        worker.message.connect(self.hand_setup_status.setText)
-        worker.succeeded.connect(lambda:self.hand_setup_status.setText('✓ 手部定位组件安装完成；新输入策略需要从零重训'))
-        worker.failed.connect(lambda msg:self.hand_setup_status.setText('安装失败：'+msg[:160]))
+        self.hand_setup_btn.setEnabled(False)
+        self.hand_setup_progress.setRange(0,0)
+        self.hand_setup_log.clear()
+        worker.message.connect(self._hand_setup_message)
+        worker.stage.connect(self._hand_setup_stage)
+        worker.progress.connect(self._hand_setup_progress)
+        worker.succeeded.connect(self._hand_setup_success)
+        worker.failed.connect(self._hand_setup_failed)
         worker.finished.connect(lambda w=worker:self._hand_setup_finished(w))
         worker.start()
+
+    def _hand_setup_message(self,message):
+        self.hand_setup_log.append(message)
+        self.hand_setup_status.setText(message[:180])
+
+    def _hand_setup_stage(self,message):
+        self.hand_setup_status.setText(message)
+        self.hand_setup_log.append('【'+message+'】')
+        self.hand_setup_progress.setRange(0,100 if message=='已安装' else 0)
+        if message=='已安装':self.hand_setup_progress.setValue(100)
+
+    def _hand_setup_progress(self,done,total):
+        if total>0:
+            self.hand_setup_progress.setRange(0,100)
+            self.hand_setup_progress.setValue(min(100,round(done*100/total)))
+        else:self.hand_setup_progress.setRange(0,0)
+        self.hand_setup_status.setText(f'下载手部模型：{done/1048576:.1f} MB'+(f' / {total/1048576:.1f} MB' if total else ''))
+
+    def _hand_setup_success(self):
+        self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(100)
+        self.hand_setup_status.setText('✓ 手部组件安装完成；新输入策略需要从零重训')
+        self.hand_setup_log.append('✓ 已安装')
+
+    def _hand_setup_failed(self,message):
+        self.hand_setup_progress.setRange(0,100);self.hand_setup_progress.setValue(0)
+        self.hand_setup_status.setText('安装失败：请查看下方日志')
+        self.hand_setup_log.append('× 安装失败：'+message)
+        QMessageBox.warning(self,'手部组件安装失败',message[-2000:])
+
     def _hand_setup_finished(self,worker):
         if self.hand_setup_worker is worker:self.hand_setup_worker=None
+        self.hand_setup_btn.setEnabled(True)
         worker.deleteLater()
+
     def load_settings(self):
         for k,w in self.inputs.items():w.setText('' if self.settings.get(k) is None else str(self.settings[k]))
         self.show_box.setChecked(bool(self.settings.get('显示候选手部框',True)))
@@ -942,12 +1067,13 @@ class GestureWindow(QWidget):
         # Reopening in reload_model applies changed camera ID / interval in worker thread.
         QMessageBox.information(self,'设置','已经保存并应用；识别处于暂停状态。')
     def update_gesture(self,category,conf=None):
-        category=category if category in 动作索引 else '无手'
+        if category is None:category='未达阈值'
+        icon_category=category if category in 动作索引 else '无手'
         if self.lastcat!=category:
-            pix=QPixmap(str(素材路径(category)))
+            pix=QPixmap(str(素材路径(icon_category)))
             self.gesture_icon.setPixmap(pix.scaled(310,270,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
             self.gesture_text.setText(category)
-            self.action_text.setText(动作索引[category].操作)
+            self.action_text.setText('候选手势尚未达到确认阈值' if category=='未达阈值' else 动作索引[icon_category].操作)
             self.lastcat=category
         self.conf.setValue(round(conf*100) if conf is not None else 0)
         self.conf.setFormat(f'{conf:.1%}' if conf is not None else '—')
@@ -1059,7 +1185,7 @@ class GestureWindow(QWidget):
                 detected=result['有效类别']
                 # Keep the camera/inference running during gesture pause so the same gesture can resume.
                 event=self.ctrl.处理(detected if detected!='无手' else None,now)
-                self.update_gesture(detected,result['置信度'])
+                self.update_gesture(detected if detected is not None else '未达阈值',result['置信度'])
                 self.camera_info.setText(f'FPS {self.last_fps:.1f} · 推理 {result["推理毫秒"]:.1f} ms · 候选 {result["原始类别"]} {result["置信度"]:.1%} · 阈值 {result["阈值"]:.2f}' + ('（未达阈值，不执行）' if not detected else ''))
                 if event:
                     if event in ('已暂停','已恢复'):
@@ -1114,6 +1240,7 @@ class GestureWindow(QWidget):
         if watched-desired:self.fs_watcher.removePaths(list(watched-desired))
         if desired-watched:self.fs_watcher.addPaths(list(desired-watched))
         self.data_note.setText(f'已检测到 {len(batches)} 个场景 · 导入或手动复制图片后通常 2 秒内刷新')
+        if hasattr(self,'public_download_btn') and not (self.public_worker and self.public_worker.isRunning()):self.refresh_public_state()
         if self.stack.currentIndex()==2:self.refresh_training_status()
     def import_files(self):
         if self.training_active():
@@ -1191,7 +1318,7 @@ class GestureWindow(QWidget):
             self.open_camera();self.refresh_data(force=True)
 
     def training_active(self):
-        return (self.proc is not None and
+        return (getattr(self,'proc',None) is not None and
                 self.proc.state()!=QProcess.ProcessState.NotRunning and
                 not getattr(self,'_train_log_testing',False))
     def start_training(self,mode):

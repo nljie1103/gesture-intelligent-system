@@ -26,7 +26,7 @@ class 手势推理器:
         # Lazy creation in CameraWorker's inference thread, rather than the Qt UI thread.
         self.locator=None
         self.识别区域比例 = float(配置['识别区域占画面短边比例'])
-        self.阈值 = .85
+        self.阈值 = .60
         阈值路径 = model_path.parent / '运行阈值.json'
         if 阈值路径.is_file():
             try:

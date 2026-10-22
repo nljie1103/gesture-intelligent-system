@@ -81,7 +81,7 @@ class 模型发布回归(unittest.TestCase):
             (root/'运行阈值.json').write_text(json.dumps({'置信度阈值':.61,'模型SHA256':'outdated'}))
             with patch.object(inference,'读取配置',return_value={'识别区域占画面短边比例':.78,'最小置信度':None}),\
                  patch.object(inference,'加载分类模型',return_value=(object(),96,{})):
-                self.assertAlmostEqual(inference.手势推理器(model).阈值,.85)
+                self.assertAlmostEqual(inference.手势推理器(model).阈值,.60)
                 (root/'运行阈值.json').write_text(json.dumps({'置信度阈值':.61,'模型SHA256':文件哈希(model)}))
                 self.assertAlmostEqual(inference.手势推理器(model).阈值,.61)
 
